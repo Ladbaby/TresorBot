@@ -23,6 +23,9 @@ func run(a []string) error {
 	if e := f.Parse(a); e != nil {
 		return e
 	}
+	if f.NArg() != 0 {
+		return fmt.Errorf("unexpected arguments: %v", f.Args())
+	}
 	if *v {
 		fmt.Println(version)
 		return nil
@@ -37,5 +40,5 @@ func run(a []string) error {
 		fmt.Println("config ok")
 		return nil
 	}
-	return fmt.Errorf("earth runner execution is not implemented yet (planned for B3)")
+	return fmt.Errorf("earth runner execution is not implemented yet")
 }

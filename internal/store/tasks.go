@@ -17,6 +17,8 @@ type Task struct {
 	AssignmentID            string
 	Epoch                   int64
 	CancelRequested         bool
+	ParentID, RootID        string
+	QueueOrder              int64
 }
 type Assignment struct {
 	ID, TaskID, RunnerID, ExecutionID string
@@ -91,6 +93,10 @@ func (s *Store) AdmitTask(botID, scope, key string, input []byte) (Task, bool, e
 			return t, false, err
 		}
 	}
+	t, err = getTask(tx, t.ID)
+	if err != nil {
+		return t, false, err
+	}
 	return t, true, tx.Commit()
 }
 
@@ -102,6 +108,9 @@ func getTask(q querier, id string) (Task, error) {
 	if err == sql.ErrNoRows {
 		err = ErrNotFound
 	}
+	if err == nil {
+		err = q.QueryRow(`SELECT COALESCE(parent_id,''),COALESCE(root_id,id),(SELECT position FROM task_order WHERE task_id=tasks.id) FROM tasks WHERE id=?`, id).Scan(&t.ParentID, &t.RootID, &t.QueueOrder)
+	}
 	return t, err
 }
 func (s *Store) GetTask(id string) (Task, error) { return getTask(s.db, id) }
@@ -111,6 +120,13 @@ func (s *Store) ClaimTask(id, runner string) (Assignment, error) {
 		return Assignment{}, err
 	}
 	defer tx.Rollback()
+	a, err := claimTask(tx, id, runner)
+	if err != nil {
+		return a, err
+	}
+	return a, tx.Commit()
+}
+func claimTask(tx *sql.Tx, id, runner string) (Assignment, error) {
 	t, err := getTask(tx, id)
 	if err != nil {
 		return Assignment{}, err
@@ -135,6 +151,22 @@ func (s *Store) ClaimTask(id, runner string) (Assignment, error) {
 	}
 	if t.State != "queued" {
 		return Assignment{}, ErrInvalid
+	}
+	if t.ParentID != "" {
+		var allowed int
+		if err = tx.QueryRow(`SELECT COUNT(*) FROM contacts c JOIN tasks p ON p.bot_id=c.sender WHERE p.id=? AND c.target=? AND p.state='waiting_child'`, t.ParentID, t.BotID).Scan(&allowed); err != nil {
+			return Assignment{}, err
+		}
+		if allowed != 1 {
+			return Assignment{}, ErrDisabled
+		}
+	}
+	var earlier int
+	if err = tx.QueryRow(`SELECT COUNT(*) FROM tasks t JOIN task_order o ON o.task_id=t.id WHERE t.bot_id=? AND t.state='queued' AND o.position<?`, t.BotID, t.QueueOrder).Scan(&earlier); err != nil {
+		return Assignment{}, err
+	}
+	if earlier > 0 {
+		return Assignment{}, ErrConflict
 	}
 	var enabled, revoked bool
 	err = tx.QueryRow(`SELECT b.enabled,r.revoked FROM bots b JOIN runners r ON r.id=? WHERE b.id=? AND b.deleted=0`, runner, t.BotID).Scan(&enabled, &revoked)
@@ -169,7 +201,7 @@ func (s *Store) ClaimTask(id, runner string) (Assignment, error) {
 	if _, err = tx.Exec(`UPDATE tasks SET state='dispatching',current_assignment=?,epoch=? WHERE id=?`, a.ID, a.Epoch, id); err != nil {
 		return a, err
 	}
-	return a, tx.Commit()
+	return a, nil
 }
 func reportTask(tx *sql.Tx, r Report) (Task, error) {
 	var taskID string
@@ -302,6 +334,13 @@ func (s *Store) RecordEvent(r Report) error {
 		return ErrConflict
 	}
 	if r.Kind == "terminal" {
+		var children int
+		if err = tx.QueryRow(`SELECT COUNT(*) FROM tasks WHERE parent_id=? AND state NOT IN('completed','failed','cancelled')`, t.ID).Scan(&children); err != nil {
+			return err
+		}
+		if children > 0 {
+			return ErrConflict
+		}
 		var outcome struct {
 			State  string          `json:"state"`
 			Result json.RawMessage `json:"result"`
@@ -327,6 +366,11 @@ func (s *Store) RecordEvent(r Report) error {
 		if _, err = tx.Exec(`UPDATE assignments SET terminal_state=?,terminal_result=? WHERE id=?`, outcome.State, []byte(outcome.Result), r.AssignmentID); err != nil {
 			return err
 		}
+		if t.ParentID != "" {
+			if _, err = tx.Exec(`UPDATE tasks SET state='running' WHERE id=? AND state='waiting_child' AND NOT EXISTS(SELECT 1 FROM tasks WHERE parent_id=? AND state NOT IN('completed','failed','cancelled'))`, t.ParentID, t.ParentID); err != nil {
+				return err
+			}
+		}
 	} else if t.State != "running" && t.State != "waiting_child" && t.State != "cancelling" && t.State != "needs_attention" {
 		return ErrInvalid
 	}
@@ -351,16 +395,14 @@ func (s *Store) CancelTask(id string) error {
 	if terminal(t.State) {
 		return nil
 	}
-	next := "cancelling"
-	if t.State == "queued" {
-		next = "cancelled"
-	}
-	if t.State == "needs_attention" {
-		next = "needs_attention"
-	}
-	_, err = tx.Exec(`UPDATE tasks SET state=?,cancel_requested=1 WHERE id=?`, next, id)
+	_, err = tx.Exec(`WITH RECURSIVE owned(id) AS (SELECT ? UNION ALL SELECT t.id FROM tasks t JOIN owned o ON t.parent_id=o.id) UPDATE tasks SET state=CASE WHEN state='queued' THEN 'cancelled' WHEN state='needs_attention' THEN 'needs_attention' ELSE 'cancelling' END,cancel_requested=1 WHERE id IN(SELECT id FROM owned) AND state NOT IN('completed','failed','cancelled')`, id)
 	if err != nil {
 		return err
+	}
+	if t.ParentID != "" {
+		if _, err = tx.Exec(`UPDATE tasks SET state='running' WHERE id=? AND state='waiting_child' AND NOT EXISTS(SELECT 1 FROM tasks WHERE parent_id=? AND state NOT IN('completed','failed','cancelled'))`, t.ParentID, t.ParentID); err != nil {
+			return err
+		}
 	}
 	return tx.Commit()
 }
@@ -371,7 +413,7 @@ func (s *Store) SetTaskState(id, from, to string) error {
 	if !allowed {
 		return ErrInvalid
 	}
-	r, err := s.db.Exec(`UPDATE tasks SET state=? WHERE id=? AND state=?`, to, id, from)
+	r, err := s.db.Exec(`UPDATE tasks SET state=? WHERE id=? AND state=? AND (?<>'running' OR NOT EXISTS(SELECT 1 FROM tasks children WHERE children.parent_id=tasks.id AND children.state NOT IN('completed','failed','cancelled')))`, to, id, from, to)
 	if err != nil {
 		return err
 	}
@@ -383,7 +425,7 @@ func (s *Store) SetTaskState(id, from, to string) error {
 }
 
 // ListEvents returns persisted reports in assignment epoch/sequence order.
-// B2 may project these records into an owner-facing task event stream.
+// Owner subscriptions use their own durable cursor through ReadOwnerEvents.
 func (s *Store) ListEvents(taskID string) ([]Report, error) {
 	if _, err := s.GetTask(taskID); err != nil {
 		return nil, err

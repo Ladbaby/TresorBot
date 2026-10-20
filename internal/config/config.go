@@ -15,12 +15,14 @@ import (
 )
 
 type Config struct {
-	Role     string `yaml:"role"`
-	BindAddr string `yaml:"bind_addr"`
-	DBPath   string `yaml:"db_path"`
-	SunURL   string `yaml:"sun_url"`
-	RunnerID string `yaml:"runner_id"`
-	StateDir string `yaml:"state_dir"`
+	Role          string `yaml:"role"`
+	BindAddr      string `yaml:"bind_addr"`
+	DBPath        string `yaml:"db_path"`
+	SunURL        string `yaml:"sun_url"`
+	RunnerID      string `yaml:"runner_id"`
+	StateDir      string `yaml:"state_dir"`
+	MemoryRoot    string `yaml:"memory_root"`
+	AdminPassword string `yaml:"admin_password"`
 }
 
 func Load(path, role string) (Config, error) {
@@ -55,10 +57,21 @@ func Load(path, role string) (Config, error) {
 		c.DBPath = filepath.Join(filepath.Dir(path), c.DBPath)
 	}
 	if role == "sun" {
+		if c.MemoryRoot == "" {
+			c.MemoryRoot = "memory"
+		}
+		if !filepath.IsAbs(c.MemoryRoot) {
+			c.MemoryRoot = filepath.Join(filepath.Dir(path), c.MemoryRoot)
+		}
 		host, port, err := net.SplitHostPort(c.BindAddr)
 		n, e := strconv.Atoi(port)
 		if err != nil || e != nil || n < 1 || n > 65535 || strings.ContainsAny(host, " \r\n") {
 			return Config{}, fmt.Errorf("invalid bind_addr")
+		}
+		ip := net.ParseIP(host)
+		loopback := host == "localhost" || (ip != nil && ip.IsLoopback())
+		if !loopback && c.AdminPassword == "" {
+			return Config{}, fmt.Errorf("non-loopback bind_addr requires admin_password")
 		}
 	}
 	if role == "earth" {

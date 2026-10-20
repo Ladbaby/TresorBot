@@ -56,8 +56,8 @@ func (s *Store) migrate() error {
 	if err = tx.QueryRow(`SELECT COALESCE(MAX(version),0) FROM schema_migrations`).Scan(&version); err != nil {
 		return err
 	}
-	if version > 1 {
-		return fmt.Errorf("database schema %d is newer than supported version 1", version)
+	if version > 2 {
+		return fmt.Errorf("database schema %d is newer than supported version 2", version)
 	}
 	if version == 0 {
 		for _, q := range schemaV1 {
@@ -66,6 +66,16 @@ func (s *Store) migrate() error {
 			}
 		}
 		if _, err = tx.Exec(`INSERT INTO schema_migrations VALUES(1)`); err != nil {
+			return err
+		}
+	}
+	if version < 2 {
+		for _, q := range schemaV2 {
+			if _, err = tx.Exec(q); err != nil {
+				return fmt.Errorf("migration 2: %w", err)
+			}
+		}
+		if _, err = tx.Exec(`INSERT INTO schema_migrations VALUES(2)`); err != nil {
 			return err
 		}
 	}

@@ -2,9 +2,9 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"flag"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"tresorbot/internal/config"
-	"tresorbot/internal/store"
+	"tresorbot/internal/sun"
 )
 
 var version = "dev"
@@ -31,6 +31,9 @@ func run(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	if fs.NArg() != 0 {
+		return fmt.Errorf("unexpected arguments: %v", fs.Args())
+	}
 	if *ver {
 		fmt.Println(version)
 		return nil
@@ -46,28 +49,28 @@ func run(args []string) error {
 		fmt.Println("config ok")
 		return nil
 	}
-	s, err := store.Open(c.DBPath)
+	// Reserve the listener before recovery changes durable task state.
+	listener, err := net.Listen("tcp", c.BindAddr)
 	if err != nil {
-		return fmt.Errorf("open store: %w", err)
+		return fmt.Errorf("listen: %w", err)
 	}
-	defer s.Close()
-	if err = s.Ping(); err != nil {
+	defer listener.Close()
+	if c.AdminPassword == "" {
+		address, ok := listener.Addr().(*net.TCPAddr)
+		if !ok || !address.IP.IsLoopback() {
+			return fmt.Errorf("password-free owner access requires a loopback listener")
+		}
+	}
+	app, err := sun.Open(c)
+	if err != nil {
 		return err
 	}
-	mux := http.NewServeMux()
-	mux.HandleFunc("/api/health", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
-	})
-	srv := &http.Server{Addr: c.BindAddr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+	defer app.Close()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	srv := &http.Server{Addr: c.BindAddr, Handler: app.Handler, ReadHeaderTimeout: 5 * time.Second, BaseContext: func(net.Listener) context.Context { return ctx }}
 	done := make(chan error, 1)
-	go func() { done <- srv.ListenAndServe() }()
+	go func() { done <- srv.Serve(listener) }()
 	select {
 	case err := <-done:
 		if err != http.ErrServerClosed {
@@ -78,6 +81,7 @@ func run(args []string) error {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if err := srv.Shutdown(shutdownCtx); err != nil {
+			_ = srv.Close()
 			return err
 		}
 		err := <-done
