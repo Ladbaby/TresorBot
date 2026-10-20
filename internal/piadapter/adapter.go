@@ -73,7 +73,11 @@ func (a *Adapter) Run(ctx context.Context, req Request, onProgress func(Progress
 	}
 	ver := exec.CommandContext(ctx, node, cli, "--version")
 	ver.Env = envSlice(safeEnvironment(filepath.Join(state, "agent"), filepath.Join(state, "sessions")))
-	output, err := ver.Output()
+	var versionOutput strings.Builder
+	ver.Stdout = &limitedWriter{w: &versionOutput, max: 1024}
+	ver.Stderr = io.Discard
+	err = ver.Run()
+	output := []byte(versionOutput.String())
 	if err != nil {
 		return result, fmt.Errorf("verify Pi version: %w", err)
 	}
@@ -115,9 +119,11 @@ func (a *Adapter) Run(ctx context.Context, req Request, onProgress func(Progress
 	}
 	var stderr strings.Builder
 	cmd.Stderr = &limitedWriter{w: &stderr, max: 32 << 10}
-	if err = cmd.Start(); err != nil {
-		return result, fmt.Errorf("start Pi: %w", err)
+	owner, startErr := startOwned(cmd)
+	if startErr != nil {
+		return result, fmt.Errorf("start owned Pi: %w", startErr)
 	}
+	defer owner.Close()
 	result.Evidence = append(result.Evidence, "started Node Pi process with exact-version RPC interface", "isolated agent settings, models, and assignment session", "allowlisted environment excludes ambient provider credentials")
 	if a.Config.OnStarted != nil {
 		if err = a.Config.OnStarted(cmd.Process.Pid, req.AssignmentID); err != nil {
@@ -174,7 +180,7 @@ func (a *Adapter) Run(ctx context.Context, req Request, onProgress func(Progress
 				}
 				r := rr.rec
 				if r["type"] == "response" {
-					if k, ok := r["id"].(string); ok {
+					if k, ok := r["id"].(string); ok && k == id {
 						responses[k] = r
 					}
 					continue
@@ -198,9 +204,14 @@ func (a *Adapter) Run(ctx context.Context, req Request, onProgress func(Progress
 		return read(id)
 	}
 	finish := func(cause error) (Result, error) {
-		stopReader()
-		_ = stdout.Close()
+		go func() {
+			for range records {
+			}
+		}()
 		_ = stdin.Close()
+		if ctx.Err() != nil {
+			_ = owner.Terminate()
+		}
 		if !result.ProcessExited {
 			w := <-waitCh
 			result.ProcessExited = true
@@ -209,9 +220,17 @@ func (a *Adapter) Run(ctx context.Context, req Request, onProgress func(Progress
 			}
 		}
 		if cause != nil && ctx.Err() != nil {
-			cause = fmt.Errorf("%w; Pi process exit observed, descendant ownership is unproven; cancellation not certified", cause)
+			result.Cancelled = owner.Certified() && result.ProcessExited
+			if !result.Cancelled {
+				cause = fmt.Errorf("%w; descendant ownership unproven; cancellation not certified", cause)
+			}
 		}
+		stopReader()
+		_ = stdout.Close()
 		<-readerDone
+		if cause != nil {
+			result.Completed = false
+		}
 		return result, cause
 	}
 	for _, c := range []string{"set_auto_retry", "set_auto_compaction"} {

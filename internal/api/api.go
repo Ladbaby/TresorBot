@@ -248,6 +248,9 @@ func respond(w http.ResponseWriter, v any, e error) {
 	jsonOut(w, 200, v)
 }
 func (a *API) bots(w http.ResponseWriter, r *http.Request, p []string) {
+	if r.Method != "GET" && a.o.TasksChanged != nil {
+		defer a.o.TasksChanged()
+	}
 	if len(p) == 1 {
 		switch r.Method {
 		case "GET":

@@ -31,7 +31,7 @@ func (c Control) Validate() error {
 		return err
 	}
 	switch c.Type {
-	case "hello", "heartbeat":
+	case "hello", "heartbeat", "ready":
 		if c.AssignmentID != "" || c.Epoch != 0 || len(c.Assignments) != 0 || c.Sequence != 0 || c.EventID != "" {
 			return errors.New("invalid connection record")
 		}

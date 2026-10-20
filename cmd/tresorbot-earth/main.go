@@ -1,10 +1,18 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
+	"path/filepath"
+	"syscall"
 	"tresorbot/internal/config"
+	"tresorbot/internal/earth"
+	"tresorbot/internal/earthexec"
+	"tresorbot/internal/earthjournal"
 )
 
 var version = "dev"
@@ -33,12 +41,35 @@ func run(a []string) error {
 	if *p == "" {
 		return fmt.Errorf("--config is required")
 	}
-	if _, e := config.Load(*p, "earth"); e != nil {
+	cfg, e := config.Load(*p, "earth")
+	if e != nil {
 		return e
 	}
 	if *c {
 		fmt.Println("config ok")
 		return nil
 	}
-	return fmt.Errorf("earth runner execution is not implemented yet")
+	if e = cfg.ValidateEarthRuntime(); e != nil {
+		return e
+	}
+	if e = os.MkdirAll(cfg.StateDir, 0755); e != nil {
+		return e
+	}
+	journal, e := earthjournal.Open(filepath.Join(cfg.StateDir, "earth.db"), 1000)
+	if e != nil {
+		return e
+	}
+	defer journal.Close()
+	executor := earthexec.New(earthexec.Config{NodePath: cfg.NodePath, CLIPath: cfg.PiCLIPath, Tools: cfg.PiTools, StateDir: cfg.StateDir})
+	client, e := earth.New(earth.Options{SunURL: cfg.SunURL, RunnerID: cfg.RunnerID, Token: cfg.RunnerToken, Journal: journal, Executor: executor})
+	if e != nil {
+		return e
+	}
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+	e = client.Run(ctx)
+	if errors.Is(e, context.Canceled) {
+		return nil
+	}
+	return e
 }

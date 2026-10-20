@@ -35,14 +35,15 @@ const (
 )
 
 type Record struct {
-	Assignment   contracts.Assign `json:"assignment"`
-	Hash         string           `json:"hash"`
-	State        State            `json:"state"`
-	ProcessID    int64            `json:"process_id,omitempty"`
-	SessionID    string           `json:"session_id,omitempty"`
-	LastSequence uint64           `json:"last_sequence"`
-	Acknowledged uint64           `json:"acknowledged"`
-	Outcome      json.RawMessage  `json:"outcome,omitempty"`
+	Assignment      contracts.Assign `json:"assignment"`
+	Hash            string           `json:"hash"`
+	State           State            `json:"state"`
+	ProcessID       int64            `json:"process_id,omitempty"`
+	SessionID       string           `json:"session_id,omitempty"`
+	LastSequence    uint64           `json:"last_sequence"`
+	Acknowledged    uint64           `json:"acknowledged"`
+	Outcome         json.RawMessage  `json:"outcome,omitempty"`
+	CancelRequested bool             `json:"cancel_requested"`
 }
 type Journal struct {
 	db       *sql.DB
@@ -61,7 +62,7 @@ func Open(path string, capacity int) (*Journal, error) {
 	}
 	db.SetMaxOpenConns(1)
 	j := &Journal{db: db, capacity: capacity}
-	_, e = db.Exec(`PRAGMA journal_mode=WAL; CREATE TABLE IF NOT EXISTS assignments(id TEXT PRIMARY KEY, runner TEXT NOT NULL, epoch INTEGER NOT NULL, hash TEXT NOT NULL, body BLOB NOT NULL, state TEXT NOT NULL, process_id INTEGER NOT NULL DEFAULT 0, session_id TEXT NOT NULL DEFAULT '', next_seq INTEGER NOT NULL DEFAULT 1, ack_seq INTEGER NOT NULL DEFAULT 0); CREATE TABLE IF NOT EXISTS outcomes(assignment TEXT PRIMARY KEY,body BLOB NOT NULL); CREATE TABLE IF NOT EXISTS reports(assignment TEXT NOT NULL, seq INTEGER NOT NULL, body BLOB NOT NULL, terminal INTEGER NOT NULL, PRIMARY KEY(assignment,seq));`)
+	_, e = db.Exec(`PRAGMA journal_mode=WAL; CREATE TABLE IF NOT EXISTS assignments(id TEXT PRIMARY KEY, runner TEXT NOT NULL, epoch INTEGER NOT NULL, hash TEXT NOT NULL, body BLOB NOT NULL, state TEXT NOT NULL, process_id INTEGER NOT NULL DEFAULT 0, session_id TEXT NOT NULL DEFAULT '', next_seq INTEGER NOT NULL DEFAULT 1, ack_seq INTEGER NOT NULL DEFAULT 0); CREATE TABLE IF NOT EXISTS outcomes(assignment TEXT PRIMARY KEY,body BLOB NOT NULL); CREATE TABLE IF NOT EXISTS reports(assignment TEXT NOT NULL, seq INTEGER NOT NULL, body BLOB NOT NULL, terminal INTEGER NOT NULL, PRIMARY KEY(assignment,seq)); CREATE TABLE IF NOT EXISTS ack_identity(assignment TEXT NOT NULL, seq INTEGER NOT NULL, event_id TEXT NOT NULL, kind TEXT NOT NULL, PRIMARY KEY(assignment,seq)); CREATE TABLE IF NOT EXISTS cancel_requests(assignment TEXT PRIMARY KEY);`)
 	if e != nil {
 		db.Close()
 		return nil, e
@@ -105,10 +106,18 @@ func (j *Journal) Admit(a contracts.Assign) (bool, error) {
 	if e != nil {
 		return false, e
 	}
+	if len(b) > contracts.MaxRunnerRecordBytes {
+		return false, ErrFull
+	}
 	j.mu.Lock()
 	defer j.mu.Unlock()
+	tx, e := j.db.Begin()
+	if e != nil {
+		return false, e
+	}
+	defer tx.Rollback()
 	var old string
-	e = j.db.QueryRow(`SELECT hash FROM assignments WHERE id=?`, a.AssignmentID).Scan(&old)
+	e = tx.QueryRow(`SELECT hash FROM assignments WHERE id=?`, a.AssignmentID).Scan(&old)
 	if e == nil {
 		if old != h {
 			return false, ErrConflict
@@ -118,14 +127,18 @@ func (j *Journal) Admit(a contracts.Assign) (bool, error) {
 	if e != sql.ErrNoRows {
 		return false, e
 	}
-	_, e = j.db.Exec(`INSERT INTO assignments(id,runner,epoch,hash,body,state) VALUES(?,?,?,?,?,?)`, a.AssignmentID, a.RunnerID, a.Epoch, h, b, Admitted)
+	_, e = tx.Exec(`INSERT INTO assignments(id,runner,epoch,hash,body,state) VALUES(?,?,?,?,?,?)`, a.AssignmentID, a.RunnerID, a.Epoch, h, b, Admitted)
+	if e != nil {
+		return false, e
+	}
+	e = tx.Commit()
 	return e == nil, e
 }
 func (j *Journal) get(id string) (Record, error) {
 	var r Record
 	var b, outcome []byte
 	var st string
-	e := j.db.QueryRow(`SELECT body,hash,state,process_id,session_id,next_seq-1,ack_seq,COALESCE((SELECT body FROM outcomes WHERE assignment=assignments.id),'null') FROM assignments WHERE id=?`, id).Scan(&b, &r.Hash, &st, &r.ProcessID, &r.SessionID, &r.LastSequence, &r.Acknowledged, &outcome)
+	e := j.db.QueryRow(`SELECT body,hash,state,process_id,session_id,next_seq-1,ack_seq,COALESCE((SELECT body FROM outcomes WHERE assignment=assignments.id),'null'), EXISTS(SELECT 1 FROM cancel_requests WHERE assignment=assignments.id) FROM assignments WHERE id=?`, id).Scan(&b, &r.Hash, &st, &r.ProcessID, &r.SessionID, &r.LastSequence, &r.Acknowledged, &outcome, &r.CancelRequested)
 	if e == sql.ErrNoRows {
 		return r, ErrNotFound
 	}
@@ -219,8 +232,18 @@ func (j *Journal) MarkStarted(id, runner string, epoch, processID int64, session
 	if r.State != LaunchIntent {
 		return ErrIneligible
 	}
-	_, e = j.db.Exec(`UPDATE assignments SET state=?,process_id=?,session_id=? WHERE id=?`, Running, processID, sessionID, id)
-	return e
+	res, e := j.db.Exec(`UPDATE assignments SET state=?,process_id=?,session_id=? WHERE id=? AND runner=? AND epoch=? AND state=?`, Running, processID, sessionID, id, runner, epoch, LaunchIntent)
+	if e != nil {
+		return e
+	}
+	n, e := res.RowsAffected()
+	if e != nil {
+		return e
+	}
+	if n != 1 {
+		return ErrIneligible
+	}
+	return nil
 }
 func (j *Journal) append(id, runner string, epoch int64, body []byte, terminal bool) (uint64, error) {
 	j.mu.Lock()
@@ -331,6 +354,121 @@ func (j *Journal) Reports(id string) ([]json.RawMessage, error) {
 			return nil, e
 		}
 		out = append(out, b)
+	}
+	return out, rows.Err()
+}
+
+// AcknowledgeRecord validates an exact retained report identity before advancing its cursor.
+func (j *Journal) AcknowledgeRecord(c contracts.Control) error {
+	if e := c.Validate(); e != nil {
+		return e
+	}
+	if c.Type != "event_ack" && c.Type != "terminal_ack" {
+		return ErrIdentity
+	}
+	if c.Sequence > math.MaxInt64 {
+		return ErrSequence
+	}
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	tx, e := j.db.Begin()
+	if e != nil {
+		return e
+	}
+	defer tx.Rollback()
+	var runner string
+	var epoch, ack int64
+	e = tx.QueryRow(`SELECT runner,epoch,ack_seq FROM assignments WHERE id=?`, c.AssignmentID).Scan(&runner, &epoch, &ack)
+	if e == sql.ErrNoRows {
+		return ErrNotFound
+	}
+	if e != nil {
+		return e
+	}
+	if runner != c.RunnerID || epoch != c.Epoch {
+		return ErrIdentity
+	}
+	var eventID, kind string
+	e = tx.QueryRow(`SELECT CASE WHEN terminal=1 THEN json_extract(body,'$.id') ELSE json_extract(body,'$.event_id') END,json_extract(body,'$.type') FROM reports WHERE assignment=? AND seq=?`, c.AssignmentID, c.Sequence).Scan(&eventID, &kind)
+	if e == sql.ErrNoRows {
+		e = tx.QueryRow(`SELECT event_id,kind FROM ack_identity WHERE assignment=? AND seq=?`, c.AssignmentID, c.Sequence).Scan(&eventID, &kind)
+		if e != nil {
+			return ErrSequence
+		}
+	} else if e != nil {
+		return e
+	}
+	want := "event"
+	if c.Type == "terminal_ack" {
+		want = "terminal"
+	}
+	if eventID != c.EventID || kind != want {
+		return ErrIdentity
+	}
+	if int64(c.Sequence) <= ack {
+		return nil
+	}
+	if _, e = tx.Exec(`INSERT OR IGNORE INTO ack_identity(assignment,seq,event_id,kind) SELECT assignment,seq,CASE WHEN terminal=1 THEN json_extract(body,'$.id') ELSE json_extract(body,'$.event_id') END,json_extract(body,'$.type') FROM reports WHERE assignment=? AND seq<=?`, c.AssignmentID, c.Sequence); e != nil {
+		return e
+	}
+	if _, e = tx.Exec(`DELETE FROM reports WHERE assignment=? AND seq<=?`, c.AssignmentID, c.Sequence); e != nil {
+		return e
+	}
+	if _, e = tx.Exec(`UPDATE assignments SET ack_seq=? WHERE id=?`, c.Sequence, c.AssignmentID); e != nil {
+		return e
+	}
+	return tx.Commit()
+}
+
+// RequestCancel durably records a runner- and epoch-fenced cancellation request.
+func (j *Journal) RequestCancel(id, runner string, epoch int64) error {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	var r string
+	var ep int64
+	e := j.db.QueryRow(`SELECT runner,epoch FROM assignments WHERE id=?`, id).Scan(&r, &ep)
+	if e == sql.ErrNoRows {
+		return ErrNotFound
+	}
+	if e != nil {
+		return e
+	}
+	if r != runner || ep != epoch {
+		return ErrIdentity
+	}
+	_, e = j.db.Exec(`INSERT OR IGNORE INTO cancel_requests(assignment) VALUES(?)`, id)
+	return e
+}
+
+// Evidence returns reconciliation evidence for all assignments owned by runnerID.
+func (j *Journal) Evidence(runnerID string) ([]contracts.AssignmentEvidence, error) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	rows, e := j.db.Query(`SELECT id,epoch,state,next_seq-1,ack_seq FROM assignments WHERE runner=? ORDER BY id`, runnerID)
+	if e != nil {
+		return nil, e
+	}
+	defer rows.Close()
+	out := []contracts.AssignmentEvidence{}
+	for rows.Next() {
+		var x contracts.AssignmentEvidence
+		var st string
+		if e = rows.Scan(&x.AssignmentID, &x.Epoch, &st, &x.LastSequence, &x.Acknowledged); e != nil {
+			return nil, e
+		}
+		switch State(st) {
+		case Admitted:
+			x.State = "accepted"
+		case LaunchIntent:
+			x.State = "launching"
+		case Running:
+			x.State = "running"
+		case Uncertain:
+			x.State = "uncertain"
+		case Terminal:
+			x.State = "terminal"
+		}
+		out = append(out, x)
 	}
 	return out, rows.Err()
 }

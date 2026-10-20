@@ -234,6 +234,9 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 				reconciled = true
+				if err = h.send(r.Context(), id, c, contracts.Control{RunnerRecord: contracts.RunnerRecord{Version: contracts.RunnerVersion, Type: "ready", ID: uuid.NewString(), RunnerID: id}}); err != nil {
+					return
+				}
 				if h.changed != nil {
 					h.changed()
 				}

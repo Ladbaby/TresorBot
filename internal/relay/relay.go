@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"runtime"
 	"strings"
 	"sync"
 
@@ -173,6 +174,14 @@ func (r *Relay) serve(w http.ResponseWriter, req *http.Request) {
 		for _, v := range vs {
 			w.Header().Add(k, v)
 		}
+	}
+	// Pi 1.0.2 on Windows can abort during native cleanup after chunked
+	// tool-continuation SSE. Close-delimited HTTP/1.1 preserves incremental
+	// flushing without buffering the response or changing inference identity.
+	if runtime.GOOS == "windows" && strings.HasPrefix(strings.ToLower(resp.Header.Get("Content-Type")), "text/event-stream") {
+		w.Header().Del("Content-Length")
+		w.Header().Set("Transfer-Encoding", "identity")
+		w.Header().Set("Connection", "close")
 	}
 	w.WriteHeader(resp.StatusCode)
 	f, flush := w.(http.Flusher)
