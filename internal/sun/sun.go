@@ -2,20 +2,27 @@
 package sun
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
+	"sync"
 
 	"tresorbot/internal/api"
 	"tresorbot/internal/config"
 	"tresorbot/internal/memory"
+	"tresorbot/internal/runnertransport"
 	"tresorbot/internal/store"
 )
 
 type Application struct {
-	Handler http.Handler
-	store   *store.Store
-	memory  *memory.Store
+	Handler   http.Handler
+	store     *store.Store
+	memory    *memory.Store
+	hub       *runnertransport.Hub
+	dispatch  *dispatchLoop
+	closeOnce sync.Once
+	closeErr  error
 }
 
 func Open(c config.Config) (*Application, error) {
@@ -48,8 +55,24 @@ func Open(c config.Config) (*Application, error) {
 		s.Close()
 		return nil, fmt.Errorf("recover tasks: %w", err)
 	}
-	h := api.New(s, m, api.Options{AdminPassword: c.AdminPassword, BindAddr: c.BindAddr, MemoryRoot: c.MemoryRoot})
-	return &Application{Handler: h, store: s, memory: m}, nil
+	app := &Application{store: s, memory: m}
+	app.hub = runnertransport.New(runnertransport.Options{Store: s, Reconciler: reconcileStore{s}, Changed: func() { app.dispatch.Wake() }, Disconnected: func(id string) { app.dispatch.Wake() }})
+	app.dispatch = newDispatchLoop(s, app.hub, func(ctx context.Context, a store.Assignment) error {
+		return app.hub.Cancel(ctx, a.RunnerID, a.ID, a.Epoch)
+	})
+	h := api.New(s, m, api.Options{AdminPassword: c.AdminPassword, BindAddr: c.BindAddr, MemoryRoot: c.MemoryRoot, RunnerStatus: app.hub.Status, RunnerChanged: app.hub.Invalidate, TasksChanged: app.dispatch.Wake})
+	mux := http.NewServeMux()
+	mux.Handle("/api/runner/connect", app.hub)
+	mux.Handle("/", h)
+	app.Handler = mux
+	return app, nil
 }
 
-func (a *Application) Close() error { return errors.Join(a.memory.Close(), a.store.Close()) }
+func (a *Application) Close() error {
+	a.closeOnce.Do(func() {
+		hubErr := a.hub.Close()
+		a.dispatch.Close()
+		a.closeErr = errors.Join(hubErr, a.memory.Close(), a.store.Close())
+	})
+	return a.closeErr
+}

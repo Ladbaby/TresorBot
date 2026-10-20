@@ -14,15 +14,38 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// ValidateEarthRuntime checks execution-only requirements without creating state.
+// Load permits incomplete enrollment for owner configuration preparation.
+func (c Config) ValidateEarthRuntime() error {
+	if c.Role != "earth" {
+		return fmt.Errorf("Earth runtime requires earth configuration")
+	}
+	if strings.TrimSpace(c.RunnerToken) == "" {
+		return fmt.Errorf("Earth requires runner_token; issue a credential from Sun's Runners tab")
+	}
+	if c.PiCLIPath == "" {
+		return fmt.Errorf("Earth requires pi_cli_path for the tested Pi installation")
+	}
+	info, err := os.Stat(c.PiCLIPath)
+	if err != nil || !info.Mode().IsRegular() {
+		return fmt.Errorf("pi_cli_path must identify an installed Pi CLI file")
+	}
+	return nil
+}
+
 type Config struct {
-	Role          string `yaml:"role"`
-	BindAddr      string `yaml:"bind_addr"`
-	DBPath        string `yaml:"db_path"`
-	SunURL        string `yaml:"sun_url"`
-	RunnerID      string `yaml:"runner_id"`
-	StateDir      string `yaml:"state_dir"`
-	MemoryRoot    string `yaml:"memory_root"`
-	AdminPassword string `yaml:"admin_password"`
+	Role          string   `yaml:"role"`
+	BindAddr      string   `yaml:"bind_addr"`
+	DBPath        string   `yaml:"db_path"`
+	SunURL        string   `yaml:"sun_url"`
+	RunnerID      string   `yaml:"runner_id"`
+	StateDir      string   `yaml:"state_dir"`
+	MemoryRoot    string   `yaml:"memory_root"`
+	AdminPassword string   `yaml:"admin_password"`
+	RunnerToken   string   `yaml:"runner_token"`
+	NodePath      string   `yaml:"node_path"`
+	PiCLIPath     string   `yaml:"pi_cli_path"`
+	PiTools       []string `yaml:"pi_tools"`
 }
 
 func Load(path, role string) (Config, error) {
@@ -91,6 +114,28 @@ func Load(path, role string) (Config, error) {
 		}
 		if _, err := uuid.Parse(c.RunnerID); err != nil {
 			return Config{}, fmt.Errorf("earth config requires a UUID runner_id")
+		}
+		if strings.TrimSpace(c.RunnerToken) != c.RunnerToken || strings.ContainsAny(c.RunnerToken, "\r\n\x00") {
+			return Config{}, fmt.Errorf("invalid runner_token")
+		}
+		if c.NodePath == "" {
+			c.NodePath = "node"
+		}
+		for _, p := range []*string{&c.NodePath, &c.PiCLIPath} {
+			if strings.ContainsAny(*p, "\r\n\x00") {
+				return Config{}, fmt.Errorf("invalid runtime path")
+			}
+			if *p != "" && !filepath.IsAbs(*p) && strings.ContainsAny(*p, "/\\") {
+				*p = filepath.Join(filepath.Dir(path), *p)
+			}
+		}
+		allowed := map[string]bool{"read": true, "bash": true, "powershell": true, "edit": true, "write": true, "grep": true, "find": true, "ls": true}
+		seen := map[string]bool{}
+		for _, tool := range c.PiTools {
+			if !allowed[tool] || seen[tool] {
+				return Config{}, fmt.Errorf("invalid or duplicate pi_tools entry %q", tool)
+			}
+			seen[tool] = true
 		}
 		if strings.TrimSpace(c.StateDir) == "" {
 			return Config{}, fmt.Errorf("earth config requires state_dir")

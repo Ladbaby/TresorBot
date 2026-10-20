@@ -159,9 +159,10 @@ func (m Event) Validate() error {
 
 type Terminal struct {
 	RunnerRecord
-	State  TaskState       `json:"state"`
-	Result json.RawMessage `json:"result,omitempty"`
-	Error  *Error          `json:"error,omitempty"`
+	Sequence uint64          `json:"sequence,omitempty"`
+	State    TaskState       `json:"state"`
+	Result   json.RawMessage `json:"result,omitempty"`
+	Error    *Error          `json:"error,omitempty"`
 }
 
 func (m Terminal) Validate() error {

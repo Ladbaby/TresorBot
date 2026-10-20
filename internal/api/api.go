@@ -19,7 +19,12 @@ import (
 	"tresorbot/internal/store"
 )
 
-type Options struct{ AdminPassword, BindAddr, MemoryRoot string }
+type Options struct {
+	AdminPassword, BindAddr, MemoryRoot string
+	RunnerStatus                        func(string) string
+	RunnerChanged                       func(string)
+	TasksChanged                        func()
+}
 type API struct {
 	s        *store.Store
 	m        *memory.Store
@@ -316,6 +321,9 @@ func optionalInt(value string) (int, error) {
 }
 
 func (a *API) tasks(w http.ResponseWriter, r *http.Request, p []string) {
+	if r.Method != "GET" && a.o.TasksChanged != nil {
+		defer a.o.TasksChanged()
+	}
 	if len(p) == 1 {
 		if r.Method == "GET" {
 			lim, err := optionalInt(r.URL.Query().Get("limit"))
@@ -387,7 +395,25 @@ func (a *API) tasks(w http.ResponseWriter, r *http.Request, p []string) {
 func (a *API) runners(w http.ResponseWriter, r *http.Request, p []string) {
 	if len(p) == 1 && r.Method == "GET" {
 		v, e := a.s.ListRunners()
-		respond(w, v, e)
+		if e != nil {
+			respond(w, nil, e)
+			return
+		}
+		type inventory struct {
+			store.Runner
+			Status string `json:"status"`
+		}
+		out := make([]inventory, 0, len(v))
+		for _, r := range v {
+			status := "disconnected"
+			if r.Revoked {
+				status = "revoked"
+			} else if a.o.RunnerStatus != nil {
+				status = a.o.RunnerStatus(r.ID)
+			}
+			out = append(out, inventory{r, status})
+		}
+		respond(w, out, nil)
 		return
 	}
 	if len(p) == 1 && r.Method == "POST" {
@@ -401,12 +427,24 @@ func (a *API) runners(w http.ResponseWriter, r *http.Request, p []string) {
 		respond(w, map[string]string{"id": id, "name": q.Name, "status": "disconnected"}, e)
 		return
 	}
+	if len(p) == 3 && p[2] == "credential" && r.Method == "POST" {
+		credential, generation, e := a.s.IssueRunnerCredential(p[1])
+		if e == nil && a.o.RunnerChanged != nil {
+			a.o.RunnerChanged(p[1])
+		}
+		w.Header().Set("Cache-Control", "no-store")
+		respond(w, map[string]any{"runner_id": p[1], "runner_token": credential, "generation": generation}, e)
+		return
+	}
 	if len(p) == 3 && p[2] == "revoke" && r.Method == "POST" {
 		e := a.s.RevokeRunner(p[1])
+		if e == nil && a.o.RunnerChanged != nil {
+			a.o.RunnerChanged(p[1])
+		}
 		respond(w, map[string]bool{"ok": true}, e)
 		return
 	}
-	if len(p) == 1 || (len(p) == 3 && p[2] == "revoke") {
+	if len(p) == 1 || (len(p) == 3 && (p[2] == "revoke" || p[2] == "credential")) {
 		writeErr(w, 405, "method not allowed")
 		return
 	}
