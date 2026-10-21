@@ -14,15 +14,19 @@ type dispatchLoop struct {
 	store            *store.Store
 	transport        scheduler.Transport
 	cancelAssignment func(context.Context, store.Assignment) error
+	cleanupGateway   func(context.Context) error
 	wake             chan struct{}
 	cancel           context.CancelFunc
 	done             chan struct{}
 	once             sync.Once
 }
 
-func newDispatchLoop(s *store.Store, t scheduler.Transport, cancelAssignment func(context.Context, store.Assignment) error) *dispatchLoop {
+func newDispatchLoop(s *store.Store, t scheduler.Transport, cancelAssignment func(context.Context, store.Assignment) error, cleanup ...func(context.Context) error) *dispatchLoop {
 	ctx, cancel := context.WithCancel(context.Background())
 	d := &dispatchLoop{store: s, transport: t, cancelAssignment: cancelAssignment, wake: make(chan struct{}, 1), cancel: cancel, done: make(chan struct{})}
+	if len(cleanup) > 0 {
+		d.cleanupGateway = cleanup[0]
+	}
 	go d.run(ctx)
 	return d
 }
@@ -45,6 +49,9 @@ func (d *dispatchLoop) run(ctx context.Context) {
 	}
 }
 func (d *dispatchLoop) pass(ctx context.Context) {
+	if d.cleanupGateway != nil {
+		_ = d.cleanupGateway(ctx)
+	}
 	runners, err := d.store.ListRunners()
 	if err != nil {
 		return

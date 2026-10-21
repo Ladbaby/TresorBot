@@ -35,11 +35,12 @@ type assignmentReader interface {
 	CurrentRunnerAssignments(string) ([]store.RunnerAssignment, error)
 }
 type Options struct {
-	Store        Store
-	MaxFrame     int64
-	Reconciler   Reconciler
-	Changed      func()
-	Disconnected func(string)
+	Store               Store
+	MaxFrame            int64
+	Reconciler          Reconciler
+	Changed             func()
+	Disconnected        func(string)
+	AuthorizeAssignment func(context.Context, store.Assignment, store.Task) (*GatewayScope, error)
 }
 type connection struct {
 	ws         *websocket.Conn
@@ -48,14 +49,15 @@ type connection struct {
 	writeMu    sync.Mutex
 }
 type Hub struct {
-	store        Store
-	max          int64
-	reconcile    Reconciler
-	changed      func()
-	disconnected func(string)
-	mu           sync.RWMutex
-	conns        map[string]*connection
-	closed       bool
+	store               Store
+	max                 int64
+	reconcile           Reconciler
+	changed             func()
+	disconnected        func(string)
+	mu                  sync.RWMutex
+	conns               map[string]*connection
+	closed              bool
+	authorizeAssignment func(context.Context, store.Assignment, store.Task) (*GatewayScope, error)
 }
 
 func New(o Options) *Hub {
@@ -63,7 +65,7 @@ func New(o Options) *Hub {
 	if max <= 0 || max > contracts.MaxRunnerRecordBytes {
 		max = contracts.MaxRunnerRecordBytes
 	}
-	return &Hub{store: o.Store, max: max, reconcile: o.Reconciler, changed: o.Changed, disconnected: o.Disconnected, conns: map[string]*connection{}}
+	return &Hub{authorizeAssignment: o.AuthorizeAssignment, store: o.Store, max: max, reconcile: o.Reconciler, changed: o.Changed, disconnected: o.Disconnected, conns: map[string]*connection{}}
 }
 func (h *Hub) current(id string, c *connection) bool {
 	h.mu.RLock()
@@ -106,7 +108,23 @@ func (h *Hub) Dispatch(ctx context.Context, a store.Assignment) error {
 	if t.AssignmentID != a.ID || t.Epoch != a.Epoch {
 		return scheduler.ErrUnavailable
 	}
-	input, e := json.Marshal(ExecutionInput{Task: json.RawMessage(t.Input), Snapshot: json.RawMessage(t.Snapshot)})
+	var scope *GatewayScope
+	if h.authorizeAssignment != nil {
+		scope, e = h.authorizeAssignment(ctx, a, t)
+		if e != nil {
+			return e
+		}
+	}
+	// Authorization may involve an external registration. Recheck both the
+	// connection generation and durable cancellation before capability delivery.
+	currentTask, err := h.store.GetTask(a.TaskID)
+	if err != nil {
+		return err
+	}
+	if currentTask.AssignmentID != a.ID || currentTask.Epoch != a.Epoch || currentTask.CancelRequested || !h.current(a.RunnerID, c) {
+		return scheduler.ErrUnavailable
+	}
+	input, e := json.Marshal(ExecutionInput{Gateway: scope, Task: json.RawMessage(t.Input), Snapshot: json.RawMessage(t.Snapshot)})
 	if e != nil {
 		return e
 	}
@@ -119,7 +137,18 @@ func (h *Hub) Dispatch(ctx context.Context, a store.Assignment) error {
 
 type ExecutionInput struct {
 	Task     json.RawMessage `json:"task"`
+	Gateway  *GatewayScope   `json:"gateway,omitempty"`
 	Snapshot json.RawMessage `json:"snapshot"`
+}
+
+// GatewayScope contains only assignment-scoped authority, never control credentials.
+type GatewayScope struct {
+	URL          string `json:"url"`
+	Capability   string `json:"capability"`
+	ExecutionID  string `json:"execution_id"`
+	AssignmentID string `json:"assignment_id"`
+	Epoch        int64  `json:"epoch"`
+	Alias        string `json:"alias"`
 }
 
 func (h *Hub) send(ctx context.Context, id string, c *connection, v any) error {

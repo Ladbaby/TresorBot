@@ -26,6 +26,9 @@ type Application struct {
 }
 
 func Open(c config.Config) (*Application, error) {
+	if err := c.ValidateIntegration(); err != nil {
+		return nil, err
+	}
 	if c.Role != "" && c.Role != "sun" {
 		return nil, fmt.Errorf("Sun requires sun configuration")
 	}
@@ -56,12 +59,25 @@ func Open(c config.Config) (*Application, error) {
 		return nil, fmt.Errorf("recover tasks: %w", err)
 	}
 	app := &Application{store: s, memory: m}
-	app.hub = runnertransport.New(runnertransport.Options{Store: s, Reconciler: reconcileStore{s}, Changed: func() { app.dispatch.Wake() }, Disconnected: func(id string) { app.dispatch.Wake() }})
+	registry, service, err := app.integration(c)
+	if err != nil {
+		m.Close()
+		s.Close()
+		return nil, err
+	}
+	var cleanup func(context.Context) error
+	if registry != nil {
+		cleanup = registry.Cleanup
+	}
+	app.hub = runnertransport.New(runnertransport.Options{AuthorizeAssignment: app.authorizeGateway(registry), Store: s, Reconciler: reconcileStore{s}, Changed: func() { app.dispatch.Wake() }, Disconnected: func(id string) { app.dispatch.Wake() }})
 	app.dispatch = newDispatchLoop(s, app.hub, func(ctx context.Context, a store.Assignment) error {
 		return app.hub.Cancel(ctx, a.RunnerID, a.ID, a.Epoch)
-	})
+	}, cleanup)
 	h := api.New(s, m, api.Options{AdminPassword: c.AdminPassword, BindAddr: c.BindAddr, MemoryRoot: c.MemoryRoot, RunnerStatus: app.hub.Status, RunnerChanged: app.hub.Invalidate, TasksChanged: app.dispatch.Wake})
 	mux := http.NewServeMux()
+	if service != nil {
+		mux.Handle("/integration/", service)
+	}
 	mux.Handle("/api/runner/connect", app.hub)
 	mux.Handle("/", h)
 	app.Handler = mux

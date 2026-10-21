@@ -60,7 +60,7 @@ func run(a []string) error {
 		return e
 	}
 	defer journal.Close()
-	executor := earthexec.New(earthexec.Config{NodePath: cfg.NodePath, CLIPath: cfg.PiCLIPath, Tools: cfg.PiTools, StateDir: cfg.StateDir})
+	executor := earthexec.New(earthexec.Config{NodePath: cfg.NodePath, CLIPath: cfg.PiCLIPath, Tools: cfg.PiTools, StateDir: cfg.StateDir, RequireGatewayScope: true, Authorize: earthexec.AssignmentAuthorization})
 	client, e := earth.New(earth.Options{SunURL: cfg.SunURL, RunnerID: cfg.RunnerID, Token: cfg.RunnerToken, Journal: journal, Executor: executor})
 	if e != nil {
 		return e

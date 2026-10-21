@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"tresorbot/internal/chatinput"
 	"tresorbot/internal/contracts"
 	"tresorbot/internal/piadapter"
 	"tresorbot/internal/relay"
@@ -22,10 +23,11 @@ var (
 )
 
 type Config struct {
-	NodePath, CLIPath string
-	Tools             []string
-	StateDir          string
-	Authorize         func(context.Context, contracts.Assign, string) (relay.Authorization, error)
+	NodePath, CLIPath   string
+	Tools               []string
+	StateDir            string
+	RequireGatewayScope bool
+	Authorize           func(context.Context, contracts.Assign, string) (relay.Authorization, error)
 }
 
 type adapterRunner func(context.Context, piadapter.Request, func(piadapter.Progress), func(int, string) error) (piadapter.Result, error)
@@ -64,15 +66,28 @@ func (e *Executor) Execute(ctx context.Context, a contracts.Assign, started func
 	if json.Unmarshal(a.Input, &input) != nil || len(input.Task) == 0 || len(input.Snapshot) == 0 {
 		return result, ErrInvalidInput
 	}
-	var task struct {
-		Text string `json:"text"`
+	if e.config.RequireGatewayScope {
+		if _, err := AssignmentAuthorization(ctx, a, "preflight"); err != nil {
+			return result, err
+		}
 	}
-	if json.Unmarshal(input.Task, &task) != nil || strings.TrimSpace(task.Text) == "" {
+	var task struct {
+		Text string          `json:"text"`
+		Chat json.RawMessage `json:"chat,omitempty"`
+	}
+	if json.Unmarshal(input.Task, &task) != nil || (strings.TrimSpace(task.Text) == "" && len(task.Chat) == 0) {
 		return result, ErrInvalidInput
 	}
 	var bot store.Bot
 	if json.Unmarshal(input.Snapshot, &bot) != nil || bot.ID == "" || bot.Alias == "" || bot.Adapter != "pi" || bot.Workspace == "" {
 		return result, ErrInvalidInput
+	}
+	if len(task.Chat) > 0 {
+		chat, err := chatinput.Parse(task.Chat, bot.Alias)
+		if err != nil {
+			return result, ErrInvalidInput
+		}
+		task.Text = chat.Prompt()
 	}
 	if !filepath.IsAbs(bot.Workspace) {
 		return result, fmt.Errorf("%w: workspace must be absolute", ErrInvalidInput)

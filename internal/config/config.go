@@ -34,18 +34,52 @@ func (c Config) ValidateEarthRuntime() error {
 }
 
 type Config struct {
-	Role          string   `yaml:"role"`
-	BindAddr      string   `yaml:"bind_addr"`
-	DBPath        string   `yaml:"db_path"`
-	SunURL        string   `yaml:"sun_url"`
-	RunnerID      string   `yaml:"runner_id"`
-	StateDir      string   `yaml:"state_dir"`
-	MemoryRoot    string   `yaml:"memory_root"`
-	AdminPassword string   `yaml:"admin_password"`
-	RunnerToken   string   `yaml:"runner_token"`
-	NodePath      string   `yaml:"node_path"`
-	PiCLIPath     string   `yaml:"pi_cli_path"`
-	PiTools       []string `yaml:"pi_tools"`
+	Role                string   `yaml:"role"`
+	BindAddr            string   `yaml:"bind_addr"`
+	DBPath              string   `yaml:"db_path"`
+	SunURL              string   `yaml:"sun_url"`
+	RunnerID            string   `yaml:"runner_id"`
+	StateDir            string   `yaml:"state_dir"`
+	MemoryRoot          string   `yaml:"memory_root"`
+	AdminPassword       string   `yaml:"admin_password"`
+	RunnerToken         string   `yaml:"runner_token"`
+	NodePath            string   `yaml:"node_path"`
+	PiCLIPath           string   `yaml:"pi_cli_path"`
+	PiTools             []string `yaml:"pi_tools"`
+	IntegrationToken    string   `yaml:"integration_token"`
+	GatewayURL          string   `yaml:"gateway_url"`
+	GatewayBindingID    string   `yaml:"gateway_binding_id"`
+	GatewayControlToken string   `yaml:"gateway_control_token"`
+}
+
+func (c Config) ValidateIntegration() error {
+	configured := c.IntegrationToken != "" || c.GatewayURL != "" || c.GatewayBindingID != "" || c.GatewayControlToken != ""
+	if !configured {
+		return nil
+	}
+	if c.IntegrationToken == "" || c.GatewayURL == "" || c.GatewayBindingID == "" || c.GatewayControlToken == "" {
+		return fmt.Errorf("incomplete gateway integration configuration")
+	}
+	if len(c.IntegrationToken) > 4096 || len(c.GatewayControlToken) > 4096 || len(c.GatewayBindingID) > 256 {
+		return fmt.Errorf("integration credential or binding exceeds limit")
+	}
+	if c.IntegrationToken == c.GatewayControlToken {
+		return fmt.Errorf("integration and control credentials must be distinct")
+	}
+	for _, v := range []string{c.IntegrationToken, c.GatewayControlToken, c.GatewayBindingID} {
+		if strings.TrimSpace(v) != v || strings.ContainsAny(v, "\r\n\x00") {
+			return fmt.Errorf("invalid integration credential or binding")
+		}
+	}
+	u, e := url.Parse(c.GatewayURL)
+	if e != nil || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") || (u.Scheme != "http" && u.Scheme != "https") {
+		return fmt.Errorf("invalid gateway_url")
+	}
+	ip := net.ParseIP(u.Hostname())
+	if u.Scheme == "http" && u.Hostname() != "localhost" && (ip == nil || !ip.IsLoopback()) {
+		return fmt.Errorf("remote gateway_url requires HTTPS")
+	}
+	return nil
 }
 
 func Load(path, role string) (Config, error) {
@@ -80,6 +114,9 @@ func Load(path, role string) (Config, error) {
 		c.DBPath = filepath.Join(filepath.Dir(path), c.DBPath)
 	}
 	if role == "sun" {
+		if err := c.ValidateIntegration(); err != nil {
+			return Config{}, err
+		}
 		if c.MemoryRoot == "" {
 			c.MemoryRoot = "memory"
 		}

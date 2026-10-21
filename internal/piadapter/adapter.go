@@ -106,7 +106,7 @@ func (a *Adapter) Run(ctx context.Context, req Request, onProgress func(Progress
 	env["PI_OFFLINE"] = "1"
 	env["PI_SKIP_VERSION_CHECK"] = "1"
 	env["PI_TELEMETRY"] = "0"
-	cmd := exec.Command(node, cli, "--mode", "rpc", "--session-dir", sessions, "--session-id", req.AssignmentID, "--model", "tresor-relay/"+req.Model, "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files", "--no-approve", "--offline", "--tools", strings.Join(tools, ","))
+	cmd := exec.Command(node, append(rpcNodeArgs(runtime.GOOS), cli, "--mode", "rpc", "--session-dir", sessions, "--session-id", req.AssignmentID, "--model", "tresor-relay/"+req.Model, "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files", "--no-approve", "--offline", "--tools", strings.Join(tools, ","))...)
 	cmd.Dir = work
 	cmd.Env = envSlice(env)
 	stdin, err := cmd.StdinPipe()
@@ -213,7 +213,16 @@ func (a *Adapter) Run(ctx context.Context, req Request, onProgress func(Progress
 			_ = owner.Terminate()
 		}
 		if !result.ProcessExited {
-			w := <-waitCh
+			var w error
+			select {
+			case w = <-waitCh:
+			case <-ctx.Done():
+				if cause == nil {
+					cause = ctx.Err()
+				}
+				_ = owner.Terminate()
+				w = <-waitCh
+			}
 			result.ProcessExited = true
 			if w != nil && cause == nil {
 				cause = fmt.Errorf("Pi process failed: %w (%s)", w, strings.TrimSpace(stderr.String()))
@@ -325,6 +334,19 @@ func (a *Adapter) Run(ctx context.Context, req Request, onProgress func(Progress
 	_ = readerDone
 	return finish(nil)
 }
+
+// rpcNodeArgs scopes this workaround to our Windows RPC child, not installed Pi
+// or ambient NODE_OPTIONS. Pi disposes its runtime before calling process.exit.
+// Forced native teardown can assert on Windows (nodejs/node#56645); allow a
+// successful shutdown to drain naturally instead. Failures still exit normally.
+func rpcNodeArgs(platform string) []string {
+	if platform != "windows" {
+		return nil
+	}
+	const source = `const exit=process.exit.bind(process);process.exit=(code)=>{const effective=code??process.exitCode??0;if(Number(effective)!==0)return exit(effective);if(process.exitCode==null)process.exitCode=0;};`
+	return []string{"--import=data:text/javascript," + source}
+}
+
 func validate(r Request) error {
 	for n, v := range map[string]string{"assignment id": r.AssignmentID, "workspace": r.Workspace, "state dir": r.StateDir, "model": r.Model, "relay URL": r.RelayURL, "relay key": r.RelayKey, "text": r.Text} {
 		if strings.TrimSpace(v) == "" {
