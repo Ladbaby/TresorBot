@@ -134,7 +134,7 @@ func (a *API) route(w http.ResponseWriter, r *http.Request) {
 		a.mem(w, r)
 	case "settings":
 		if r.Method == "GET" {
-			jsonOut(w, 200, map[string]any{"bind_addr": a.o.BindAddr, "memory_root": a.o.MemoryRoot, "retention": "records are retained", "runner_transport": "not connected"})
+			jsonOut(w, 200, map[string]any{"bind_addr": a.o.BindAddr, "memory_root": a.o.MemoryRoot, "retention": "records are retained"})
 		} else {
 			writeErr(w, 405, "method not allowed")
 		}

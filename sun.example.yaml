@@ -1,0 +1,13 @@
+# Copy to sun.yaml. Run Sun on the machine that keeps your bots and memory.
+bind_addr: "127.0.0.1:11520"
+db_path: "./sun.db"
+memory_root: "./memory"
+admin_password: "replace-with-your-owner-password"
+
+# Match the two different tokens in the Tresor rule shown in README.md.
+integration_token: "replace-with-service-token"
+gateway_control_token: "replace-with-control-token"
+gateway_url: "http://127.0.0.1:11510"
+
+# Works with the exact rule and step IDs in README.md. Keep those IDs unchanged.
+gateway_binding_id: "52f2492b004903c2be9ef0145297035672c430b32084e65c5911f2a8faaf8816"

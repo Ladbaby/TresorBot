@@ -81,6 +81,8 @@ func Open(c config.Config) (*Application, error) {
 	mux.Handle("/api/runner/connect", app.hub)
 	mux.Handle("/", h)
 	app.Handler = mux
+	// Retry durable cleanup after restart even before a runner reconnects.
+	app.dispatch.Wake()
 	return app, nil
 }
 

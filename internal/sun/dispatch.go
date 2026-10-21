@@ -16,6 +16,8 @@ type dispatchLoop struct {
 	cancelAssignment func(context.Context, store.Assignment) error
 	cleanupGateway   func(context.Context) error
 	wake             chan struct{}
+	cleanupWake      chan struct{}
+	cleanupDone      chan struct{}
 	cancel           context.CancelFunc
 	done             chan struct{}
 	once             sync.Once
@@ -27,6 +29,9 @@ func newDispatchLoop(s *store.Store, t scheduler.Transport, cancelAssignment fun
 	if len(cleanup) > 0 {
 		d.cleanupGateway = cleanup[0]
 	}
+	d.cleanupWake = make(chan struct{}, 1)
+	d.cleanupDone = make(chan struct{})
+	go d.runCleanup(ctx)
 	go d.run(ctx)
 	return d
 }
@@ -36,7 +41,23 @@ func (d *dispatchLoop) Wake() {
 	default:
 	}
 }
-func (d *dispatchLoop) Close() { d.once.Do(d.cancel); <-d.done }
+func (d *dispatchLoop) Close() { d.once.Do(d.cancel); <-d.done; <-d.cleanupDone }
+
+// External revocation must not block delivery of runner cancellation or unrelated
+// queue progress. One joined worker retains durable retries on future wakes.
+func (d *dispatchLoop) runCleanup(ctx context.Context) {
+	defer close(d.cleanupDone)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-d.cleanupWake:
+			if d.cleanupGateway != nil {
+				_ = d.cleanupGateway(ctx)
+			}
+		}
+	}
+}
 func (d *dispatchLoop) run(ctx context.Context) {
 	defer close(d.done)
 	for {
@@ -49,8 +70,9 @@ func (d *dispatchLoop) run(ctx context.Context) {
 	}
 }
 func (d *dispatchLoop) pass(ctx context.Context) {
-	if d.cleanupGateway != nil {
-		_ = d.cleanupGateway(ctx)
+	select {
+	case d.cleanupWake <- struct{}{}:
+	default:
 	}
 	runners, err := d.store.ListRunners()
 	if err != nil {
