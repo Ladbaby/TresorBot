@@ -185,7 +185,12 @@ func (s *Store) ClaimNext(botID, runnerID string) (Assignment, error) {
 }
 
 // AdmitChild records child identity before any dispatch and checks the complete wait graph.
-func (s *Store) AdmitChild(parentID, targetID, operationID string, input []byte) (Task, error) {
+type ChildAdmissionFence struct {
+	AssignmentID, ExecutionID string
+	Epoch                     int64
+}
+
+func (s *Store) AdmitChild(parentID, targetID, operationID string, input []byte, fences ...ChildAdmissionFence) (Task, error) {
 	canonical, e := canonicalJSON(input)
 	if e != nil || operationID == "" || len(operationID) > 256 {
 		return Task{}, ErrInvalid
@@ -195,11 +200,38 @@ func (s *Store) AdmitChild(parentID, targetID, operationID string, input []byte)
 		return Task{}, e
 	}
 	defer tx.Rollback()
+	if len(fences) > 1 {
+		return Task{}, ErrInvalid
+	}
+	if len(fences) == 1 {
+		f := fences[0]
+		parent, err := getTask(tx, parentID)
+		if err != nil {
+			return Task{}, err
+		}
+		if parent.AssignmentID != f.AssignmentID || parent.Epoch != f.Epoch || parent.CancelRequested || (parent.State != "running" && parent.State != "waiting_child") {
+			return Task{}, ErrConflict
+		}
+		var active int
+		if err = tx.QueryRow(`SELECT COUNT(*) FROM gateway_executions g JOIN bots b ON b.id=g.bot_id WHERE g.execution_id=? AND g.assignment_id=? AND g.task_id=? AND g.epoch=? AND g.state='active' AND b.enabled=1 AND b.deleted=0`, f.ExecutionID, f.AssignmentID, parentID, f.Epoch).Scan(&active); err != nil {
+			return Task{}, err
+		}
+		if active != 1 {
+			return Task{}, ErrConflict
+		}
+	}
 	hash := string(canonical) + "\x00" + targetID
 	var oldID, oldHash string
 	e = tx.QueryRow(`SELECT child_id,hash FROM task_dependencies WHERE parent_id=? AND operation_id=?`, parentID, operationID).Scan(&oldID, &oldHash)
 	if e == nil {
 		if hash != oldHash {
+			return Task{}, ErrConflict
+		}
+		parent, err := getTask(tx, parentID)
+		if err != nil {
+			return Task{}, err
+		}
+		if parent.CancelRequested || terminal(parent.State) {
 			return Task{}, ErrConflict
 		}
 		return getTask(tx, oldID)
@@ -211,7 +243,7 @@ func (s *Store) AdmitChild(parentID, targetID, operationID string, input []byte)
 	if e != nil {
 		return Task{}, e
 	}
-	if parent.State != "running" && parent.State != "waiting_child" {
+	if parent.CancelRequested || (parent.State != "running" && parent.State != "waiting_child") {
 		return Task{}, ErrConflict
 	}
 	var allowed int

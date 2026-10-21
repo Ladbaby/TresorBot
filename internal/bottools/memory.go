@@ -43,11 +43,11 @@ func (h *Handler) Execute(ctx context.Context, scope Scope, r Request) (any, int
 	}
 	allowed := map[string]bool{"scope": true}
 	switch r.Tool {
-	case "tresorbot_memory_list":
+	case "TresorBotMemoryList":
 		allowed["prefix"] = true
-	case "tresorbot_memory_read":
+	case "TresorBotMemoryRead":
 		allowed["path"] = true
-	case "tresorbot_memory_write":
+	case "TresorBotMemoryWrite":
 		for _, key := range []string{"path", "expected_revision", "content"} {
 			allowed[key] = true
 		}
@@ -83,15 +83,15 @@ func (h *Handler) Execute(ctx context.Context, scope Scope, r Request) (any, int
 		return domain("invalid_scope"), 400, nil
 	}
 	switch r.Tool {
-	case "tresorbot_memory_read":
+	case "TresorBotMemoryRead":
 		if args.Path == "" || args.Content != "" || args.Expected != "" || args.Prefix != "" {
 			return domain("invalid_arguments"), 400, nil
 		}
-	case "tresorbot_memory_list":
+	case "TresorBotMemoryList":
 		if args.Path != "" || args.Content != "" || args.Expected != "" {
 			return domain("invalid_arguments"), 400, nil
 		}
-	case "tresorbot_memory_write":
+	case "TresorBotMemoryWrite":
 		if args.Path == "" || args.Prefix != "" {
 			return domain("invalid_arguments"), 400, nil
 		}
@@ -131,11 +131,11 @@ func (h *Handler) Execute(ctx context.Context, scope Scope, r Request) (any, int
 	}
 	var payload any
 	switch r.Tool {
-	case "tresorbot_memory_read":
+	case "TresorBotMemoryRead":
 		payload, err = h.m.Read(scopeName, scope.BotID, args.Path)
-	case "tresorbot_memory_write":
+	case "TresorBotMemoryWrite":
 		payload, err = h.m.Write(scopeName, scope.BotID, args.Path, args.Expected, args.Content, r.OperationID)
-	case "tresorbot_memory_list":
+	case "TresorBotMemoryList":
 		var entries []memory.Entry
 		entries, err = h.m.List(scopeName, scope.BotID)
 		if err == nil {
@@ -196,8 +196,8 @@ func Definitions() []map[string]any {
 	}
 	text := func() map[string]any { return map[string]any{"type": "string"} }
 	return []map[string]any{
-		tool("tresorbot_memory_list", "List Markdown memory paths and revisions in private or shared memory.", map[string]any{"scope": scope, "prefix": text()}, []string{"scope"}),
-		tool("tresorbot_memory_read", "Read one Markdown memory document and its revision.", map[string]any{"scope": scope, "path": text()}, []string{"scope", "path"}),
-		tool("tresorbot_memory_write", "Save Markdown with compare-and-swap revision. Use an empty expected_revision for a new file.", map[string]any{"scope": scope, "path": text(), "expected_revision": text(), "content": text()}, []string{"scope", "path", "expected_revision", "content"}),
+		tool("TresorBotMemoryList", "List Markdown memory paths and revisions in private or shared memory.", map[string]any{"scope": scope, "prefix": text()}, []string{"scope"}),
+		tool("TresorBotMemoryRead", "Read one Markdown memory document and its revision.", map[string]any{"scope": scope, "path": text()}, []string{"scope", "path"}),
+		tool("TresorBotMemoryWrite", "Save Markdown with compare-and-swap revision. Use an empty expected_revision for a new file.", map[string]any{"scope": scope, "path": text(), "expected_revision": text(), "content": text()}, []string{"scope", "path", "expected_revision", "content"}),
 	}
 }

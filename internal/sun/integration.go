@@ -41,7 +41,12 @@ func (a *Application) integration(c config.Config) (*gateway.Registry, *bridge.S
 			if e != nil || ex.Subject != bot.ID {
 				return nil, store.ErrConflict
 			}
-			return map[string]any{"kind": "managedTools", "service": "local", "codec": "openai-chat.v1", "instructions": "Use tresorbot_memory_list/read/write for durable memory. Private memory belongs to this bot; shared writes require permission. Pi owns all other available tools. Read revisions before modifying existing Markdown.", "tools": bottools.Definitions()}, nil
+			delegation, e := tools.DelegationDefinitions(bot.ID)
+			if e != nil {
+				return nil, e
+			}
+			definitions := append(bottools.Definitions(), delegation...)
+			return map[string]any{"kind": "managedTools", "service": "local", "codec": "openai-chat.v1", "instructions": "Use TresorBotMemoryList, TresorBotMemoryRead and TresorBotMemoryWrite for durable memory. Private memory belongs to this bot; shared writes require permission. Use TresorBotContactsList to discover permitted recipients and TresorBotSendMessage for explicitly requested communication. It currently waits for the recipient's reply. Include only the context you intend to share. Pi owns all other available tools. Read revisions before modifying existing Markdown.", "tools": definitions}, nil
 		},
 		Tools: func(w http.ResponseWriter, r *http.Request, raw json.RawMessage) {
 			reply := func(status int, payload any) {
@@ -64,7 +69,46 @@ func (a *Application) integration(c config.Config) (*gateway.Registry, *bridge.S
 				failure(403, "execution_unauthorized")
 				return
 			}
-			payload, status, e := tools.Execute(r.Context(), bottools.Scope{ExecutionID: ex.ExecutionID, AssignmentID: ex.AssignmentID, BotID: ex.Subject, Alias: ex.AliasID, Service: ex.Service, Epoch: ex.Epoch}, bottools.Request{OperationID: request.OperationID, Tool: request.Tool, Arguments: request.Arguments, Reconcile: request.Reconcile})
+			scope := bottools.Scope{ExecutionID: ex.ExecutionID, AssignmentID: ex.AssignmentID, BotID: ex.Subject, Alias: ex.AliasID, Service: ex.Service, Epoch: ex.Epoch}
+			toolRequest := bottools.Request{OperationID: request.OperationID, Tool: request.Tool, Arguments: request.Arguments, Reconcile: request.Reconcile}
+			if request.Tool == "TresorBotContactsList" {
+				payload, status, e := tools.ListContactsTool(r.Context(), scope, toolRequest)
+				if e != nil {
+					failure(503, "contacts_unavailable")
+					return
+				}
+				reply(status, payload)
+				return
+			}
+			if request.Tool == "TresorBotSendMessage" {
+				child, payload, status, e := tools.PrepareDelegation(r.Context(), scope, toolRequest)
+				if e != nil {
+					failure(503, "delegation_uncertain")
+					return
+				}
+				if status != 200 {
+					reply(status, payload)
+					return
+				}
+				a.dispatch.Wake()
+				// Commit only after durable admission so the service header
+				// deadline stays separate from task time. No body heartbeat is
+				// needed on this direct service channel; the final JSON remains bounded.
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(200)
+				if f, ok := w.(http.Flusher); ok {
+					f.Flush()
+				}
+				payload, e = tools.AwaitChild(r.Context(), scope, child.ID)
+				if e != nil {
+					replyPayload := map[string]any{"error": map[string]any{"code": "delegation_uncertain", "message": "delegation outcome unavailable", "retryable": false}}
+					_ = json.NewEncoder(w).Encode(map[string]any{"version": contracts.IntegrationVersion, "payload": replyPayload})
+					return
+				}
+				_ = json.NewEncoder(w).Encode(map[string]any{"version": contracts.IntegrationVersion, "payload": payload})
+				return
+			}
+			payload, status, e := tools.Execute(r.Context(), scope, toolRequest)
 			if e != nil {
 				failure(503, "tool_operation_uncertain")
 				return
