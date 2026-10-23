@@ -1,0 +1,156 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version tag (e.g. v0.1.0)"
+        required: true
+        type: string
+      platforms:
+        description: "Platforms to build"
+        required: true
+        type: choice
+        default: windows,linux,macos
+        options:
+          - windows
+          - linux
+          - macos
+          - windows,linux,macos
+      release_type:
+        description: "Release type"
+        required: true
+        type: choice
+        default: Pre-release
+        options:
+          - Latest
+          - Pre-release
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ inputs.version }}
+  cancel-in-progress: false
+
+env:
+  GO_VERSION: "1.26"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.targets.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate version and select targets
+        id: targets
+        env:
+          VERSION: ${{ inputs.version }}
+          PLATFORMS: ${{ inputs.platforms }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$ ]]; then
+            printf '%s\n' 'Use a version such as v0.1.0 or v0.1.0-rc.1.' >&2
+            exit 1
+          fi
+          if git ls-remote --exit-code --tags origin "refs/tags/$VERSION" >/dev/null; then
+            printf 'Tag %s already exists. Choose a new version.\n' "$VERSION" >&2
+            exit 1
+          else
+            status=$?
+            if [[ "$status" != 2 ]]; then exit "$status"; fi
+          fi
+          python3 - <<'PY'
+          import json, os
+          targets = {
+              "windows": [{"os": "windows", "arch": "amd64"}],
+              "linux": [{"os": "linux", "arch": arch} for arch in ("amd64", "arm64")],
+              "macos": [{"os": "darwin", "arch": arch} for arch in ("amd64", "arm64")],
+          }
+          selected = os.environ["PLATFORMS"].split(",")
+          matrix = {"include": [target for name in selected for target in targets[name]]}
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write("matrix=" + json.dumps(matrix, separators=(",", ":")) + "\n")
+          PY
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: Test and vet
+        run: |
+          go clean -testcache
+          go test ./...
+          go vet ./...
+
+  build:
+    name: Build ${{ matrix.os }} ${{ matrix.arch }}
+    runs-on: ubuntu-latest
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.test.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: Build and package Sun and Earth
+        env:
+          VERSION: ${{ inputs.version }}
+          GOOS: ${{ matrix.os }}
+          GOARCH: ${{ matrix.arch }}
+          CGO_ENABLED: "0"
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          for command in sun earth; do
+            name="tresorbot-$command-$GOOS-$GOARCH"
+            extension=""
+            if [[ "$GOOS" == windows ]]; then extension=".exe"; fi
+            go build -trimpath -ldflags "-s -w -X main.version=$VERSION" \
+              -o "$name$extension" "./cmd/tresorbot-$command"
+            if [[ "$GOOS" == windows ]]; then
+              zip "dist/$name-$VERSION.zip" "$name$extension"
+            else
+              gzip -n -c "$name" > "dist/$name-$VERSION.gz"
+            fi
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.os }}-${{ matrix.arch }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    runs-on: ubuntu-latest
+    needs: [test, build]
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: dist
+          merge-multiple: true
+      - name: Add example configuration and checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp sun.example.yaml earth.example.yaml dist/
+          cd dist
+          sha256sum -- * > ../checksums.txt
+          mv ../checksums.txt .
+      - name: Publish release at tested commit
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.version }}
+          target_commitish: ${{ github.sha }}
+          prerelease: ${{ inputs.release_type == 'Pre-release' }}
+          make_latest: ${{ inputs.release_type == 'Latest' && 'true' || 'false' }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: dist/*
