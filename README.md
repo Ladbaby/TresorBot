@@ -9,9 +9,37 @@ Define fleet of bots each with dedicated memory, that mimic you to implement the
 
 ## Start
 
-You need Go, a running Tresor, Node.js, and **Pi 1.0.2**. Windows has been tested with Node 24.16.0 and 24.22.0. Bots can use shell tools: run them only on trusted machines and in workspaces you are comfortable giving them access to.
+You need a running Tresor, and **Node.js + Pi Agent** on each Earth machine. 
 
-Build from this folder:
+### Install prebuilt binaries
+
+Choose `sun`, `earth`, or `both`. Install Sun on your main machine and Earth wherever bots will run.
+
+**Linux/macOS:**
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Ladbaby/TresorBot/main/setup.sh | bash -s -- sun
+# Or include pre-releases:
+curl -fsSL https://raw.githubusercontent.com/Ladbaby/TresorBot/main/setup.sh | bash -s -- earth --prerelease
+# Or pin a version instead:
+curl -fsSL https://raw.githubusercontent.com/Ladbaby/TresorBot/main/setup.sh | TRESORBOT_VERSION=v0.1.0 bash -s -- both
+```
+
+**Windows PowerShell:**
+
+```powershell
+Invoke-WebRequest https://raw.githubusercontent.com/Ladbaby/TresorBot/main/setup.ps1 -OutFile setup.ps1
+.\setup.ps1 -Role Sun
+# Or: .\setup.ps1 -Role Earth -Prerelease
+# Or: .\setup.ps1 -Role Both -Version v0.1.0
+```
+
+The installers verify downloads, back up replaced binaries, and preserve existing configs. Binaries go in `~/.local/bin`; configs go in `~/.config/tresorbot`. Follow the printed commands to edit the config and start your selected component. Installation does not install Pi, start services, or connect Tresor automatically.
+
+### Build from source
+
+Alternatively, you can build the binaries yourself.
+With Go installed, build from this folder:
 
 ```sh
 go build -o tresorbot-sun.exe ./cmd/tresorbot-sun
@@ -19,6 +47,12 @@ go build -o tresorbot-earth.exe ./cmd/tresorbot-earth
 ```
 
 On Linux/macOS, omit `.exe` from the commands.
+
+### Configure and start
+
+If you used an installer, edit its configs under `~/.config/tresorbot` and use the full startup commands it prints.
+
+Else, for a source build, follow these steps:
 
 1. Copy `sun.example.yaml` to `sun.yaml` and choose a password and two different tokens.
 2. Start Sun: `./tresorbot-sun.exe --config sun.yaml`.
