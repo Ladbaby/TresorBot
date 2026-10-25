@@ -44,26 +44,64 @@ Alternatively, you can build the binaries yourself.
 With Go installed, build from this folder:
 
 ```sh
-go build -o tresorbot-sun.exe ./cmd/tresorbot-sun
-go build -o tresorbot-earth.exe ./cmd/tresorbot-earth
+go build -o tresorbot-sun ./cmd/tresorbot-sun
+go build -o tresorbot-earth ./cmd/tresorbot-earth
 ```
 
-On Linux/macOS, omit `.exe` from the commands.
+Commands below use Linux/macOS syntax. On Windows, add `.exe` to binary names and use `.\` instead of `./` in PowerShell.
 
 ### Configure and start
 
 If you used an installer, edit its configs under `~/.config/tresorbot` and use the full startup commands it prints.
 
+---
+
 Else, for a source build, follow these steps:
 
 1. Copy `sun.example.yaml` to `sun.yaml` and choose a password and two different tokens.
-2. Start Sun: `./tresorbot-sun.exe --config sun.yaml`.
+2. Start Sun: `./tresorbot-sun --config sun.yaml`.
 3. Open **http://127.0.0.1:11520**. In **Runners**, create a runner and issue its credential.
 4. Copy `earth.example.yaml` to `earth.yaml`. Fill in that runner's ID/token and the full path to Pi's `dist/cli.js` file.
-5. Start Earth: `./tresorbot-earth.exe --config earth.yaml`.
+5. Start Earth: `./tresorbot-earth --config earth.yaml`.
 6. In Sun's **Bots** tab, create `bot/personal`, select its runner and enter an absolute workspace folder. Bot settings save automatically when you leave a field.
 
 For machines on another network address, use HTTPS for Sun and Tresor. Keep runner credentials private. Rotating a runner credential invalidates the old one.
+
+### Run as systemd services (Linux)
+
+You can run TresorBot as user services—no `sudo` needed, and they start on login. 
+Finish configuring each component first and stop any copy running in your terminal.
+
+```bash
+role=sun # Change to earth on a runner machine.
+mkdir -p ~/.config/systemd/user
+cat > ~/.config/systemd/user/tresorbot-$role.service <<EOF
+[Unit]
+Description=TresorBot $role
+
+[Service]
+Type=simple
+ExecStart="%h/.local/bin/tresorbot-$role" --config "%h/.config/tresorbot/$role.yaml"
+WorkingDirectory=%h/.config/tresorbot
+Environment="PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin"
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+EOF
+
+systemctl --user daemon-reload
+systemctl --user enable --now tresorbot-$role.service
+systemctl --user status tresorbot-$role.service
+
+# Follow logs, restart after config changes, or stop:
+journalctl --user -u tresorbot-$role.service -f
+# systemctl --user restart tresorbot-$role.service
+# systemctl --user stop tresorbot-$role.service
+```
+
+To start at boot and keep running after logout, enable lingering once: `sudo loginctl enable-linger "$USER"`.
 
 ## Connect Tresor
 
@@ -72,7 +110,7 @@ Create a Tresor alias named `bot/personal` pointing to the provider/model you wa
 With Tresor running, install the bridge from the sibling plugin repository:
 
 ```sh
-./tresor.exe plugin install ../Tresor-plugins/tresorbot-bridge --config config.yaml
+tresor plugin install ../Tresor-plugins/tresorbot-bridge --config config.yaml
 ```
 
 Add this rule to Tresor's `rules` list. Keep the shown rule and step IDs: they match `gateway_binding_id` in the Sun example. Replace both token placeholders with the values in `sun.yaml`.
