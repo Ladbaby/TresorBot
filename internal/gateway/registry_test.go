@@ -7,8 +7,10 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 	"tresorbot/internal/store"
 )
 
@@ -35,6 +37,10 @@ func TestFailedRevocationSurvivesRestartAndRejectsChangedGateway(t *testing.T) {
 	fail.Store(true)
 	var posts, deletes atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/integrations/bindings/resolve" {
+			json.NewEncoder(w).Encode(map[string]string{"binding_id": strings.Repeat("b", 64)})
+			return
+		}
 		if r.Method == "DELETE" {
 			deletes.Add(1)
 			if fail.Load() {
@@ -67,7 +73,7 @@ func TestFailedRevocationSurvivesRestartAndRejectsChangedGateway(t *testing.T) {
 	s, err = store.Open(path)
 	must(err)
 	changed := cfg
-	changed.BindingID = "different-binding"
+	changed.URL = "http://127.0.0.1:1"
 	other, err := New(changed, s)
 	must(err)
 	if other.Cleanup(context.Background()) == nil || deletes.Load() != 1 {
@@ -85,6 +91,140 @@ func TestFailedRevocationSurvivesRestartAndRejectsChangedGateway(t *testing.T) {
 	must(registry.Cleanup(context.Background()))
 	if deletes.Load() != 2 {
 		t.Fatal("repeated settled cleanup")
+	}
+}
+
+func TestBindingDiscoveryRefusesRedirectsAndOversizedResponses(t *testing.T) {
+	s, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	var leaked atomic.Int32
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { leaked.Add(1) }))
+	defer target.Close()
+	for _, mode := range []string{"redirect", "oversized", "malformed"} {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch mode {
+			case "redirect":
+				http.Redirect(w, r, target.URL, 307)
+			case "oversized":
+				w.Write([]byte(strings.Repeat(" ", 4097) + `{"binding_id":"` + strings.Repeat("a", 64) + `"}`))
+			default:
+				w.Write([]byte(`{"binding_id":`))
+			}
+		}))
+		registry, err := New(Config{URL: server.URL, ControlToken: "control", ServiceToken: "service"}, s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = registry.ResolveBinding(context.Background())
+		server.Close()
+		if err == nil {
+			t.Fatal("accepted", mode)
+		}
+	}
+	if leaked.Load() != 0 {
+		t.Fatal("credentials forwarded via redirect")
+	}
+}
+
+func TestConcurrentBindingDiscoverySharesLookupAndAllowsCancelledWaiter(t *testing.T) {
+	s, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if calls.Add(1) == 1 {
+			close(started)
+		}
+		<-release
+		json.NewEncoder(w).Encode(map[string]string{"binding_id": strings.Repeat("f", 64)})
+	}))
+	defer server.Close()
+	registry, err := New(Config{URL: server.URL, ControlToken: "control", ServiceToken: "service"}, s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := make(chan error, 1)
+	go func() { _, err := registry.ResolveBinding(context.Background()); result <- err }()
+	<-started
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := registry.ResolveBinding(ctx); err != context.Canceled {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond*20)
+			defer cancel()
+			if _, err := registry.ResolveBinding(ctx); err != context.DeadlineExceeded {
+				t.Errorf("waiting lookup: %v", err)
+			}
+		}()
+	}
+	wg.Wait()
+	close(release)
+	if err := <-result; err != nil {
+		t.Fatal(err)
+	}
+	if calls.Load() != 1 {
+		t.Fatal("concurrent lookup duplicated", calls.Load())
+	}
+}
+
+func TestBindingDiscoveryAuthenticatesAndRevalidates(t *testing.T) {
+	s, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	var status atomic.Int32
+	status.Store(200)
+	var binding atomic.Value
+	binding.Store(strings.Repeat("d", 64))
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/integrations/bindings/resolve" || r.Method != "POST" || r.Header.Get("Authorization") != "Bearer control" {
+			t.Error("wrong discovery request")
+		}
+		var body map[string]string
+		if json.NewDecoder(r.Body).Decode(&body) != nil || body["service_token"] != "service" {
+			t.Error("missing service credential")
+		}
+		w.WriteHeader(int(status.Load()))
+		json.NewEncoder(w).Encode(map[string]string{"binding_id": binding.Load().(string)})
+	}))
+	defer server.Close()
+	registry, err := New(Config{URL: server.URL, BindingID: "obsolete-rule-id", ControlToken: "control", ServiceToken: "service"}, s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := registry.ResolveBinding(context.Background())
+	if err != nil || got != strings.Repeat("d", 64) {
+		t.Fatal(got, err)
+	}
+	binding.Store(strings.Repeat("e", 64))
+	got, err = registry.ResolveBinding(context.Background())
+	if err != nil || got != strings.Repeat("e", 64) {
+		t.Fatal("stale discovery", got, err)
+	}
+	for _, code := range []int{401, 403, 409, 404, 405, 503, 302} {
+		status.Store(int32(code))
+		if _, err = registry.ResolveBinding(context.Background()); err == nil {
+			t.Fatalf("accepted status %d", code)
+		}
+	}
+	status.Store(200)
+	binding.Store("invalid")
+	if _, err = registry.ResolveBinding(context.Background()); err == nil {
+		t.Fatal("accepted invalid binding")
 	}
 }
 
@@ -113,8 +253,17 @@ func TestRegistrationIsDurableAndOneShot(t *testing.T) {
 				t.Fatal(e)
 			}
 			var posts, deletes atomic.Int32
+			var changed atomic.Bool
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if r.Header.Get("Authorization") != "Bearer control" || r.Header.Get("X-Tresor-Integration-Service") != "binding" {
+				if r.URL.Path == "/api/integrations/bindings/resolve" {
+					id := strings.Repeat("b", 64)
+					if changed.Load() {
+						id = strings.Repeat("c", 64)
+					}
+					json.NewEncoder(w).Encode(map[string]string{"binding_id": id})
+					return
+				}
+				if r.Header.Get("Authorization") != "Bearer control" || r.Header.Get("X-Tresor-Integration-Service") != strings.Repeat("b", 64) {
 					t.Error("wrong control identity")
 				}
 				if r.Method == "DELETE" {
@@ -149,6 +298,11 @@ func TestRegistrationIsDurableAndOneShot(t *testing.T) {
 			if lost {
 				return
 			}
+			changed.Store(true)
+			if _, err := registry.Ensure(context.Background(), a, bot); err == nil || posts.Load() != 1 {
+				t.Fatal("existing execution rebound after configuration change", err)
+			}
+			// Revocation uses the original durable binding, not the newly discovered one.
 			if e = s.CancelTask(a.TaskID); e != nil {
 				t.Fatal(e)
 			}

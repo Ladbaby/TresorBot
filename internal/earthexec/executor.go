@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"tresorbot/internal/chatinput"
 	"tresorbot/internal/contracts"
@@ -38,8 +40,14 @@ type Executor struct {
 }
 
 func New(c Config) *Executor {
+	var warnings sync.Map
+	diagnostic := func(message string) {
+		if _, loaded := warnings.LoadOrStore(message, struct{}{}); !loaded {
+			log.Printf("Pi compatibility warning: %s", message)
+		}
+	}
 	return newExecutor(c, func(ctx context.Context, req piadapter.Request, progress func(piadapter.Progress), started func(int, string) error) (piadapter.Result, error) {
-		a := piadapter.New(piadapter.Config{NodePath: c.NodePath, CLIPath: c.CLIPath, Tools: c.Tools, OnStarted: started})
+		a := piadapter.New(piadapter.Config{NodePath: c.NodePath, CLIPath: c.CLIPath, Tools: c.Tools, OnStarted: started, Diagnostic: diagnostic})
 		return a.Run(ctx, req, progress)
 	})
 }

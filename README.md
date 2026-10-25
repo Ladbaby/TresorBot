@@ -61,7 +61,7 @@ Else, for a source build, follow these steps:
 1. Copy `sun.example.yaml` to `sun.yaml` and choose a password and two different tokens.
 2. Start Sun: `./tresorbot-sun --config sun.yaml`.
 3. Open **http://127.0.0.1:11520**. In **Runners**, create a runner and issue its credential.
-4. Copy `earth.example.yaml` to `earth.yaml`. Fill in that runner's ID/token and the full path to Pi's `dist/cli.js` file.
+4. Copy `earth.example.yaml` to `earth.yaml`. Fill in the runner's ID/token and the full path to Pi's `dist/cli.js` file.
 5. Start Earth: `./tresorbot-earth --config earth.yaml`.
 6. In Sun's **Bots** tab, create `bot/personal`, select its runner and enter an absolute workspace folder. Bot settings save automatically when you leave a field.
 
@@ -113,7 +113,7 @@ With Tresor running, install the bridge from the sibling plugin repository:
 tresor plugin install ../Tresor-plugins/tresorbot-bridge --config config.yaml
 ```
 
-Add this rule to Tresor's `rules` list. Keep the shown rule and step IDs: they match `gateway_binding_id` in the Sun example. Replace both token placeholders with the values in `sun.yaml`.
+Add a rule to Tresor's `rules` list. Replace both token placeholders with the values in `sun.yaml`.
 
 ```yaml
 - id: bot-chat
@@ -130,7 +130,7 @@ Add this rule to Tresor's `rules` list. Keep the shown rule and step IDs: they m
         control_token: replace-with-control-token
 ```
 
-Restart Tresor after editing its YAML. If you change those rule or step IDs, Sun's connection ID must also change; keep the example IDs for this setup. Use an OpenAI Chat-compatible provider for bot aliases.
+Restart Tresor after editing its YAML.
 
 In your chat client, select `bot/personal` through Tresor. Text messages and supplied chat history are supported; client-provided tools, images and extra request options are not currently supported. Replies arrive when the bot finishes, rather than token by token.
 

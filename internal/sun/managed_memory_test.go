@@ -15,6 +15,10 @@ import (
 
 func TestScopedIntegrationRegistersAndExecutesMemoryThroughSun(t *testing.T) {
 	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/integrations/bindings/resolve" {
+			json.NewEncoder(w).Encode(map[string]string{"binding_id": strings.Repeat("c", 64)})
+			return
+		}
 		if r.Header.Get("Authorization") != "Bearer control" {
 			t.Error("wrong control credential")
 		}
@@ -27,7 +31,7 @@ func TestScopedIntegrationRegistersAndExecutesMemoryThroughSun(t *testing.T) {
 	}))
 	defer gateway.Close()
 	root := t.TempDir()
-	app, e := Open(config.Config{Role: "sun", DBPath: filepath.Join(root, "sun.db"), MemoryRoot: filepath.Join(root, "memory"), IntegrationToken: "service", GatewayURL: gateway.URL, GatewayBindingID: "binding", GatewayControlToken: "control"})
+	app, e := Open(config.Config{Role: "sun", DBPath: filepath.Join(root, "sun.db"), MemoryRoot: filepath.Join(root, "memory"), IntegrationToken: "service", GatewayURL: gateway.URL, GatewayBindingID: strings.Repeat("c", 64), GatewayControlToken: "control"})
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -48,7 +52,7 @@ func TestScopedIntegrationRegistersAndExecutesMemoryThroughSun(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	registry, _, e := app.integration(config.Config{IntegrationToken: "service", GatewayURL: gateway.URL, GatewayBindingID: "binding", GatewayControlToken: "control"})
+	registry, _, e := app.integration(config.Config{IntegrationToken: "service", GatewayURL: gateway.URL, GatewayBindingID: strings.Repeat("c", 64), GatewayControlToken: "control"})
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -64,11 +68,11 @@ func TestScopedIntegrationRegistersAndExecutesMemoryThroughSun(t *testing.T) {
 		app.Handler.ServeHTTP(w, r)
 		return w
 	}
-	prepared := call("/integration/prepare", map[string]any{"binding_id": "binding", "routing": map[string]any{"requestedModel": bot.Alias, "downstream": map[string]string{"format": "openai"}}, "execution": map[string]any{"id": assignment.ExecutionID, "subject": bot.ID, "assignment": assignment.ID, "epoch": assignment.Epoch}})
+	prepared := call("/integration/prepare", map[string]any{"binding_id": strings.Repeat("c", 64), "routing": map[string]any{"requestedModel": bot.Alias, "downstream": map[string]string{"format": "openai"}}, "execution": map[string]any{"id": assignment.ExecutionID, "subject": bot.ID, "assignment": assignment.ID, "epoch": assignment.Epoch}})
 	if prepared.Code != 200 || !strings.Contains(prepared.Body.String(), "managedTools") {
 		t.Fatal(prepared.Code, prepared.Body.String())
 	}
-	execution := map[string]any{"ExecutionID": assignment.ExecutionID, "AssignmentID": assignment.ID, "Subject": bot.ID, "AliasID": bot.Alias, "Service": "binding", "Epoch": assignment.Epoch, "InferenceID": "inference-1"}
+	execution := map[string]any{"ExecutionID": assignment.ExecutionID, "AssignmentID": assignment.ID, "Subject": bot.ID, "AliasID": bot.Alias, "Service": strings.Repeat("c", 64), "Epoch": assignment.Epoch, "InferenceID": "inference-1"}
 	payload := map[string]any{"execution": execution, "operation_id": strings.Repeat("b", 64), "tool": "TresorBotMemoryWrite", "arguments": map[string]string{"scope": "private", "path": "index.md", "expected_revision": "", "content": "remembered"}, "reconcile": false}
 	w := call("/integration/tools/execute", payload)
 	if w.Code != 200 {

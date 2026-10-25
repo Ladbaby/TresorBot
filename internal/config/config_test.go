@@ -56,6 +56,15 @@ func TestLoopbackAddressesSupportLocalPasswordFreeMode(t *testing.T) {
 	}
 }
 
+func TestIntegrationDoesNotRequireManualBinding(t *testing.T) {
+	for _, legacy := range []string{"", "gateway_binding_id: obsolete-rule-id\n"} {
+		_, err := loadText(t, "sun", "integration_token: service\ngateway_control_token: control\ngateway_url: http://127.0.0.1:11510\n"+legacy)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 func TestInvalidConfig(t *testing.T) {
 	for _, tc := range []struct{ role, text string }{
 		{"sun", "bind_addr: 0.0.0.0:11520"}, {"sun", "bind_addr: :11520"},

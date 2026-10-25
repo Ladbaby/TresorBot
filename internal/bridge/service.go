@@ -4,6 +4,7 @@ package bridge
 
 import (
 	"bytes"
+	"context"
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
@@ -41,6 +42,7 @@ type Input struct {
 }
 type Options struct {
 	Token, BindingID string
+	ResolveBinding   func(context.Context) (string, error)
 	Store            *store.Store
 	// Managed validates registered authority and returns the managed-tools decision.
 	Managed      func(Input, store.Bot) (any, error)
@@ -51,7 +53,7 @@ type Options struct {
 type Service struct{ o Options }
 
 func New(o Options) (*Service, error) {
-	if o.Token == "" || o.BindingID == "" || o.Store == nil {
+	if o.Token == "" || (o.BindingID == "" && o.ResolveBinding == nil) || o.Store == nil {
 		return nil, errors.New("integration service requires credential, binding and store")
 	}
 	if len(o.Token) > 4096 || len(o.BindingID) > 256 || strings.TrimSpace(o.Token) != o.Token || strings.ContainsAny(o.Token+o.BindingID, "\r\n\x00") {
@@ -118,7 +120,19 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var input Input
 	payloadDecoder := json.NewDecoder(bytes.NewReader(envelope.Payload))
 	payloadDecoder.DisallowUnknownFields()
-	if payloadDecoder.Decode(&input) != nil || input.BindingID != s.o.BindingID || input.Routing.RequestedModel == "" {
+	if payloadDecoder.Decode(&input) != nil || input.BindingID == "" || input.Routing.RequestedModel == "" {
+		fail(w, 400, "invalid_integration_input")
+		return
+	}
+	binding := s.o.BindingID
+	if s.o.ResolveBinding != nil {
+		binding, err = s.o.ResolveBinding(r.Context())
+		if err != nil {
+			fail(w, 503, "gateway_binding_unavailable")
+			return
+		}
+	}
+	if input.BindingID != binding {
 		fail(w, 400, "invalid_integration_input")
 		return
 	}

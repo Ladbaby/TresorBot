@@ -6,8 +6,8 @@ db_path: "./earth.db"
 state_dir: "./earth-state"
 
 node_path: "node"
-# Full path to Pi 1.0.2's installed dist/cli.js file; use forward slashes on Windows.
-pi_cli_path: "C:/path/to/pi-coding-agent/dist/cli.js"
+# Full path to Pi's installed dist/cli.js file; use forward slashes on Windows.
+pi_cli_path: "/path/to/pi-coding-agent/dist/cli.js"
 # Omit pi_tools to use the default file and shell tools.
 # pi_tools: [read, grep, find, ls, edit, write, powershell]
 

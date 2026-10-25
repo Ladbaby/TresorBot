@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -21,10 +22,11 @@ const SupportedVersion = "1.0.2"
 const maxRecordBytes = 8 << 20
 
 type Config struct {
-	NodePath  string
-	CLIPath   string
-	Tools     []string
-	OnStarted func(pid int, sessionID string) error
+	NodePath   string
+	CLIPath    string
+	Tools      []string
+	OnStarted  func(pid int, sessionID string) error
+	Diagnostic func(message string)
 }
 type Request struct {
 	AssignmentID, Workspace, StateDir, Model, RelayURL, RelayKey, Instructions, Text string
@@ -35,7 +37,10 @@ type Result struct {
 	Completed, Cancelled, ProcessExited                       bool
 	Evidence                                                  []string
 }
-type Adapter struct{ Config Config }
+type Adapter struct {
+	Config Config
+	once   sync.Once
+}
 type recordResult struct {
 	rec map[string]any
 	err error
@@ -76,13 +81,25 @@ func (a *Adapter) Run(ctx context.Context, req Request, onProgress func(Progress
 	var versionOutput strings.Builder
 	ver.Stdout = &limitedWriter{w: &versionOutput, max: 1024}
 	ver.Stderr = io.Discard
-	err = ver.Run()
-	output := []byte(versionOutput.String())
-	if err != nil {
-		return result, fmt.Errorf("verify Pi version: %w", err)
+	probeErr := ver.Run()
+	output := strings.TrimSpace(versionOutput.String())
+	if ctx.Err() != nil {
+		return result, ctx.Err()
 	}
-	if strings.TrimSpace(string(output)) != "Pi Coding Agent v"+SupportedVersion && strings.TrimSpace(string(output)) != "v"+SupportedVersion && strings.TrimSpace(string(output)) != SupportedVersion {
-		return result, fmt.Errorf("unsupported Pi version: require exactly %s, got %q", SupportedVersion, strings.TrimSpace(string(output)))
+	warning := ""
+	if probeErr != nil {
+		warning = fmt.Sprintf("could not verify Pi version (expected %s): %v", SupportedVersion, probeErr)
+	} else if output != "Pi Coding Agent v"+SupportedVersion && output != "v"+SupportedVersion && output != SupportedVersion {
+		warning = fmt.Sprintf("Pi version is %q; tested version is %s", output, SupportedVersion)
+	}
+	if warning != "" {
+		a.once.Do(func() {
+			if a.Config.Diagnostic != nil {
+				a.Config.Diagnostic(warning)
+			} else {
+				log.Printf("Pi compatibility warning: %s", warning)
+			}
+		})
 	}
 	if err = os.MkdirAll(state, 0700); err != nil {
 		return result, fmt.Errorf("create isolated state dir: %w", err)

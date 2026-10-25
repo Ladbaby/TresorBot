@@ -48,25 +48,25 @@ type Config struct {
 	PiTools             []string `yaml:"pi_tools"`
 	IntegrationToken    string   `yaml:"integration_token"`
 	GatewayURL          string   `yaml:"gateway_url"`
-	GatewayBindingID    string   `yaml:"gateway_binding_id"`
+	GatewayBindingID    string   `yaml:"gateway_binding_id"` // Deprecated: accepted for old YAML; resolved IDs are never taken from this field.
 	GatewayControlToken string   `yaml:"gateway_control_token"`
 }
 
 func (c Config) ValidateIntegration() error {
-	configured := c.IntegrationToken != "" || c.GatewayURL != "" || c.GatewayBindingID != "" || c.GatewayControlToken != ""
+	configured := c.IntegrationToken != "" || c.GatewayURL != "" || c.GatewayControlToken != ""
 	if !configured {
 		return nil
 	}
-	if c.IntegrationToken == "" || c.GatewayURL == "" || c.GatewayBindingID == "" || c.GatewayControlToken == "" {
+	if c.IntegrationToken == "" || c.GatewayURL == "" || c.GatewayControlToken == "" {
 		return fmt.Errorf("incomplete gateway integration configuration")
 	}
-	if len(c.IntegrationToken) > 4096 || len(c.GatewayControlToken) > 4096 || len(c.GatewayBindingID) > 256 {
+	if len(c.IntegrationToken) > 4096 || len(c.GatewayControlToken) > 4096 {
 		return fmt.Errorf("integration credential or binding exceeds limit")
 	}
 	if c.IntegrationToken == c.GatewayControlToken {
 		return fmt.Errorf("integration and control credentials must be distinct")
 	}
-	for _, v := range []string{c.IntegrationToken, c.GatewayControlToken, c.GatewayBindingID} {
+	for _, v := range []string{c.IntegrationToken, c.GatewayControlToken} {
 		if strings.TrimSpace(v) != v || strings.ContainsAny(v, "\r\n\x00") {
 			return fmt.Errorf("invalid integration credential or binding")
 		}

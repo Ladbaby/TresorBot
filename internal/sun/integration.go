@@ -32,7 +32,7 @@ func (a *Application) integration(c config.Config) (*gateway.Registry, *bridge.S
 		body, _ := json.Marshal(map[string]any{"chat": input})
 		return body, input.Stream, nil
 	}
-	service, err := bridge.New(bridge.Options{Token: c.IntegrationToken, BindingID: c.GatewayBindingID, Store: a.store,
+	service, err := bridge.New(bridge.Options{Token: c.IntegrationToken, ResolveBinding: registry.ResolveBinding, Store: a.store,
 		ValidateChat: func(raw json.RawMessage, alias string) error { _, e := chatinput.Parse(raw, alias); return e },
 		Invoke:       bridge.ChatInvoker(a.store, func() { a.dispatch.Wake() }, parse),
 		Managed: func(input bridge.Input, bot store.Bot) (any, error) {
@@ -65,7 +65,7 @@ func (a *Application) integration(c config.Config) (*gateway.Registry, *bridge.S
 				return
 			}
 			ex := request.Execution
-			if _, e := a.store.ValidateGatewayExecution(ex.ExecutionID, ex.AssignmentID, ex.Subject, ex.AliasID, ex.Service, ex.Epoch); e != nil || ex.Service != c.GatewayBindingID {
+			if _, e := a.store.ValidateGatewayExecution(ex.ExecutionID, ex.AssignmentID, ex.Subject, ex.AliasID, ex.Service, ex.Epoch); e != nil {
 				failure(403, "execution_unauthorized")
 				return
 			}
