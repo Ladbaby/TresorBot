@@ -1,5 +1,7 @@
 # TresorBot
 
+> Project status: Not ready for everyday usage yet.
+
 Open source Grok Bot/OpenAI dots/Meta Muse alternative.
 Connect all your existing agents running on any machine together, instead of inventing yet another agent.
 Define fleet of bots each with dedicated memory, that mimic you to implement the task for you.
