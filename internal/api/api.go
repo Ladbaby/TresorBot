@@ -9,7 +9,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -75,10 +74,6 @@ func (a *API) route(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.URL.Path == "/api/auth/login" && r.Method == "POST" {
-		if !a.origin(r) {
-			writeErr(w, 403, "origin rejected")
-			return
-		}
 		var v struct {
 			Password string `json:"password"`
 		}
@@ -160,21 +155,7 @@ func (a *API) auth(r *http.Request) bool {
 	defer a.mu.Unlock()
 	return a.sessions[cookie(r, "owner_session")]
 }
-func (a *API) origin(r *http.Request) bool {
-	u, err := url.Parse(r.Header.Get("Origin"))
-	if err != nil || u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
-		return false
-	}
-	scheme := "http"
-	if r.TLS != nil {
-		scheme = "https"
-	}
-	return u.Scheme == scheme && strings.EqualFold(u.Host, r.Host)
-}
 func (a *API) mutation(r *http.Request) bool {
-	if !a.origin(r) {
-		return false
-	}
 	c, e := r.Cookie("owner_csrf")
 	return e == nil && c.Value != "" && subtle.ConstantTimeCompare([]byte(c.Value), []byte(r.Header.Get("X-CSRF-Token"))) == 1
 }
