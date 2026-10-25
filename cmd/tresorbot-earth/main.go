@@ -59,6 +59,9 @@ func run(a []string) error {
 			return e
 		}
 	}
+	if e = cfg.EnsureEarthWorkspace(); e != nil {
+		return fmt.Errorf("create default Earth workspace: %w", e)
+	}
 	if e = os.MkdirAll(cfg.StateDir, 0755); e != nil {
 		return e
 	}

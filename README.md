@@ -63,7 +63,7 @@ Else, for a source build, follow these steps:
 3. Open **http://127.0.0.1:11520**. In **Earths**, create an Earth entry and issue its credential.
 4. Copy `earth.example.yaml` to `earth.yaml`. Fill in the Earth ID/token. 
 5. Start Earth: `./tresorbot-earth --config earth.yaml`.
-6. Open Earth's local dashboard at **http://127.0.0.1:11521**. Choose its default workspace there; In Sun's **Bots** tab, create `bot/personal` and select the Earth.
+6. Earth automatically creates and uses **`~/.tresorbot/workspace`** on its machine. To change it, open Earth's local dashboard at **http://127.0.0.1:11521**. In Sun's **Bots** tab, create `bot/personal` and select the Earth.
 
 
 ### Run as systemd services (Linux)

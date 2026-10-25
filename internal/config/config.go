@@ -14,6 +14,36 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// EarthWorkspace resolves the dedicated default on the Earth machine without creating it.
+func EarthWorkspace(path string) (string, error) {
+	if path == "" || path == "~" || strings.HasPrefix(path, "~/") || strings.HasPrefix(path, `~\`) {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("resolve Earth home: %w", err)
+		}
+		if path == "" {
+			return filepath.Join(home, ".tresorbot", "workspace"), nil
+		}
+		if path == "~" {
+			return home, nil
+		}
+		return filepath.Join(home, path[2:]), nil
+	}
+	return path, nil
+}
+
+// EnsureEarthWorkspace creates only the dedicated application default, never custom projects.
+func (c Config) EnsureEarthWorkspace() error {
+	fallback, err := EarthWorkspace("")
+	if err != nil {
+		return err
+	}
+	if filepath.Clean(c.DefaultWorkspace) == filepath.Clean(fallback) {
+		return os.MkdirAll(fallback, 0755)
+	}
+	return nil
+}
+
 // ValidateEarthRuntime checks execution-only requirements without creating state.
 // Load permits incomplete enrollment for owner configuration preparation.
 func (c Config) ValidateEarthRuntime() error {
@@ -185,6 +215,10 @@ func Load(path, role string) (Config, error) {
 		}
 		if strings.ContainsAny(c.DefaultWorkspace, "\r\n\x00") || len(c.DefaultWorkspace) > 4096 {
 			return Config{}, fmt.Errorf("invalid default_workspace")
+		}
+		c.DefaultWorkspace, err = EarthWorkspace(c.DefaultWorkspace)
+		if err != nil {
+			return Config{}, err
 		}
 		if c.DefaultWorkspace != "" && !filepath.IsAbs(c.DefaultWorkspace) {
 			return Config{}, fmt.Errorf("default_workspace must be absolute")

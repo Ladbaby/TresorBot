@@ -7,7 +7,8 @@ db_path: "./earth.db"
 state_dir: "./earth-state"
 
 bind_addr: "127.0.0.1:11521"
-# default_workspace: "/absolute/path/to/workspace"
+# Defaults to ~/.tresorbot/workspace on this Earth
+# default_workspace: "~/.tresorbot/workspace"
 # Set true to run headless without Earth's local dashboard.
 ui_disabled: false
 admin_password: your-earth-admin-password

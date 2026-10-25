@@ -53,8 +53,16 @@ func UpdateEarthSettings(path, revision string, fields map[string]string) (Confi
 			return Config{}, "", errors.New("invalid setting value")
 		}
 		if key == "default_workspace" && value != "" {
-			info, e := os.Stat(value)
-			if !filepath.IsAbs(value) || e != nil || !info.IsDir() {
+			resolved, err := EarthWorkspace(value)
+			if err != nil {
+				return Config{}, "", err
+			}
+			fallback, err := EarthWorkspace("")
+			if err != nil {
+				return Config{}, "", err
+			}
+			info, e := os.Stat(resolved)
+			if !filepath.IsAbs(resolved) || (filepath.Clean(resolved) != filepath.Clean(fallback) && (e != nil || !info.IsDir())) {
 				return Config{}, "", errors.New("default workspace must be an existing absolute directory on Earth")
 			}
 		}
@@ -107,6 +115,9 @@ func UpdateEarthSettings(path, revision string, fields map[string]string) (Confi
 	}
 	if current != revision {
 		return Config{}, "", ErrConfigConflict
+	}
+	if err = cfg.EnsureEarthWorkspace(); err != nil {
+		return Config{}, "", err
 	}
 	if err = os.Rename(name, path); err != nil {
 		return Config{}, "", err
