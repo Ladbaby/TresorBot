@@ -18,7 +18,7 @@ func TestFinalChatJSONAndSSEHideTaskInternals(t *testing.T) {
 				t.Fatal(e)
 			}
 			defer st.Close()
-			bot, e := st.CreateBot(store.Bot{Alias: "bot/personal", Name: "Personal", Enabled: true})
+			bot, e := st.CreateBot(store.Bot{Alias: "bot/personal", Name: "Personal", Enabled: true,Workspace:t.TempDir()})
 			if e != nil {
 				t.Fatal(e)
 			}

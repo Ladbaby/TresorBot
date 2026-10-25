@@ -153,7 +153,7 @@ try {
     foreach ($itemRole in $roles) {
         Write-Host "${itemRole}: edit '$configDir/$itemRole.yaml', then run:"
         Write-Host "  & `"$binDir/tresorbot-$itemRole.exe`" --config `"$configDir/$itemRole.yaml`""
-        if ($itemRole -eq 'earth') { Write-Host 'Earth requires Node.js and Pi (1.0.2 is the tested version; other versions are allowed); set the Pi dist/cli.js path and enroll Earth with a Sun runner ID/token.' }
+        if ($itemRole -eq 'earth') { Write-Host 'Earth requires Node.js and Pi.' }
         if ($itemRole -eq 'sun') { Write-Host 'Configure Sun credentials/tokens, start Sun, then create a runner to enroll Earth.' }
     }
     Write-Host 'Add ~/.local/bin to your user PATH manually if desired; this installer does not change PATH.'

@@ -43,6 +43,14 @@ func (s *Store) CreateRunner(name string) (string, error) {
 	_, err := s.db.Exec(`INSERT INTO runners(id,name) VALUES(?,?)`, id, name)
 	return id, err
 }
+func (s *Store) UpdateRunnerMetadata(id, workspace, platform string) error {
+	if len(workspace) > 4096 || len(platform) > 256 || strings.ContainsRune(workspace, 0) || strings.ContainsRune(platform, 0) {
+		return ErrInvalid
+	}
+	r, err := s.db.Exec(`UPDATE runners SET default_workspace=?,platform=? WHERE id=? AND revoked=0`, workspace, platform, id)
+	return changed(r, err)
+}
+
 func (s *Store) RevokeRunner(id string) error {
 	r, err := s.db.Exec(`UPDATE runners SET revoked=1 WHERE id=?`, id)
 	return changed(r, err)

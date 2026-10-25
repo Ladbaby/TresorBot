@@ -1,14 +1,19 @@
 # Copy to earth.yaml on each machine where bots will run.
 sun_url: "http://127.0.0.1:11520"
-runner_id: "paste-the-runner-ID-from-Sun"
-runner_token: "paste-the-runner-token-from-Sun"
+# Sun assigns this Earth ID and enrollment token. Keep the token private.
+runner_id: "paste-the-Earth-ID-from-Sun"
+runner_token: "paste-the-Earth-token-from-Sun"
 db_path: "./earth.db"
 state_dir: "./earth-state"
 
-node_path: "node"
-# Full path to Pi's installed dist/cli.js file; use forward slashes on Windows.
-pi_cli_path: "/path/to/pi-coding-agent/dist/cli.js"
-# Omit pi_tools to use the default file and shell tools.
-# pi_tools: [read, grep, find, ls, edit, write, powershell]
+bind_addr: "127.0.0.1:11521"
+# default_workspace: "/absolute/path/to/workspace"
+# Set true to run headless without Earth's local dashboard.
+ui_disabled: false
+admin_password: your-earth-admin-password
 
-# For a remote Sun, use its HTTPS address instead of localhost.
+# Optional overrides; normally Earth discovers Node.js and Pi automatically.
+# node_path: "/usr/bin/node"
+# pi_cli_path: "/path/to/pi-coding-agent/dist/cli.js"
+# pi_path: "/path/to/pi"
+# pi_tools: [read, grep, find, ls, edit, write, powershell]

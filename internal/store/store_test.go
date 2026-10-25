@@ -347,7 +347,7 @@ func TestClaimUsesAdmittedRunnerSnapshot(t *testing.T) {
 	must(t, err)
 	second, err := s.CreateRunner("second")
 	must(t, err)
-	b, err := s.CreateBot(Bot{Alias: "bot/pinned", Name: "Pinned", RunnerID: first, Enabled: true})
+	b, err := s.CreateBot(Bot{Alias: "bot/pinned", Name: "Pinned", RunnerID: first,Workspace:t.TempDir(), Enabled: true})
 	must(t, err)
 	task, _, err := s.AdmitTask(b.ID, "", "", []byte(`{}`))
 	must(t, err)
@@ -550,7 +550,7 @@ func TestMigrationAndForeignKeys(t *testing.T) {
 	}
 	var version int
 	must(t, s.db.QueryRow(`SELECT MAX(version) FROM schema_migrations`).Scan(&version))
-	if version != 3 {
+	if version != 4 {
 		t.Fatal(version)
 	}
 	_, err = s.db.Exec(`INSERT INTO schema_migrations VALUES(99)`)

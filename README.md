@@ -60,12 +60,11 @@ Else, for a source build, follow these steps:
 
 1. Copy `sun.example.yaml` to `sun.yaml` and choose a password and two different tokens.
 2. Start Sun: `./tresorbot-sun --config sun.yaml`.
-3. Open **http://127.0.0.1:11520**. In **Runners**, create a runner and issue its credential.
-4. Copy `earth.example.yaml` to `earth.yaml`. Fill in the runner's ID/token and the full path to Pi's `dist/cli.js` file.
+3. Open **http://127.0.0.1:11520**. In **Earths**, create an Earth entry and issue its credential.
+4. Copy `earth.example.yaml` to `earth.yaml`. Fill in the Earth ID/token. 
 5. Start Earth: `./tresorbot-earth --config earth.yaml`.
-6. In Sun's **Bots** tab, create `bot/personal`, select its runner and enter an absolute workspace folder. Bot settings save automatically when you leave a field.
+6. Open Earth's local dashboard at **http://127.0.0.1:11521**. Choose its default workspace there; In Sun's **Bots** tab, create `bot/personal` and select the Earth.
 
-For machines on another network address, use HTTPS for Sun and Tresor. Keep runner credentials private. Rotating a runner credential invalidates the old one.
 
 ### Run as systemd services (Linux)
 

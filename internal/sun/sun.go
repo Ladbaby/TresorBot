@@ -11,6 +11,7 @@ import (
 	"tresorbot/internal/api"
 	"tresorbot/internal/config"
 	"tresorbot/internal/memory"
+	"tresorbot/internal/ownerauth"
 	"tresorbot/internal/runnertransport"
 	"tresorbot/internal/store"
 )
@@ -19,6 +20,7 @@ type Application struct {
 	Handler   http.Handler
 	store     *store.Store
 	memory    *memory.Store
+	sessions  *ownerauth.Store
 	hub       *runnertransport.Hub
 	dispatch  *dispatchLoop
 	closeOnce sync.Once
@@ -58,9 +60,20 @@ func Open(c config.Config) (*Application, error) {
 		s.Close()
 		return nil, fmt.Errorf("recover tasks: %w", err)
 	}
-	app := &Application{store: s, memory: m}
+	authPath := c.DBPath + ".owner-sessions.db"
+	if c.DBPath == ":memory:" {
+		authPath = ":memory:"
+	}
+	sessions, err := ownerauth.Open(authPath, c.AdminPassword)
+	if err != nil {
+		m.Close()
+		s.Close()
+		return nil, fmt.Errorf("open owner sessions: %w", err)
+	}
+	app := &Application{store: s, memory: m, sessions: sessions}
 	registry, service, err := app.integration(c)
 	if err != nil {
+		sessions.Close()
 		m.Close()
 		s.Close()
 		return nil, err
@@ -73,7 +86,7 @@ func Open(c config.Config) (*Application, error) {
 	app.dispatch = newDispatchLoop(s, app.hub, func(ctx context.Context, a store.Assignment) error {
 		return app.hub.Cancel(ctx, a.RunnerID, a.ID, a.Epoch)
 	}, cleanup)
-	h := api.New(s, m, api.Options{AdminPassword: c.AdminPassword, BindAddr: c.BindAddr, MemoryRoot: c.MemoryRoot, RunnerStatus: app.hub.Status, RunnerChanged: app.hub.Invalidate, TasksChanged: app.dispatch.Wake})
+	h := api.New(s, m, api.Options{OwnerAuth: sessions, AdminPassword: c.AdminPassword, BindAddr: c.BindAddr, MemoryRoot: c.MemoryRoot, RunnerStatus: app.hub.Status, RunnerChanged: app.hub.Invalidate, TasksChanged: app.dispatch.Wake})
 	mux := http.NewServeMux()
 	if service != nil {
 		mux.Handle("/integration/", service)
@@ -90,7 +103,7 @@ func (a *Application) Close() error {
 	a.closeOnce.Do(func() {
 		hubErr := a.hub.Close()
 		a.dispatch.Close()
-		a.closeErr = errors.Join(hubErr, a.memory.Close(), a.store.Close())
+		a.closeErr = errors.Join(hubErr, a.sessions.Close(), a.memory.Close(), a.store.Close())
 	})
 	return a.closeErr
 }

@@ -28,6 +28,9 @@ type Store interface {
 	AppendRunnerEvent(contracts.Event) error
 	RecordTerminal(contracts.Terminal, int64) error
 }
+type metadataUpdater interface {
+	UpdateRunnerMetadata(id, workspace, platform string) error
+}
 type Reconciler interface {
 	ReconcileRunner(string, []contracts.AssignmentEvidence) error
 }
@@ -240,6 +243,12 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			case "hello":
 				if hello || reconciled {
 					return
+				}
+				if m.DefaultWorkspace != "" || m.Platform != "" {
+					u, ok := h.store.(metadataUpdater)
+					if !ok || !h.generationOK(id, gen) || u.UpdateRunnerMetadata(id, m.DefaultWorkspace, m.Platform) != nil {
+						return
+					}
 				}
 				hello = true
 			case "reconcile":

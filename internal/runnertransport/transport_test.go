@@ -70,7 +70,7 @@ func TestAuthenticatedHandshakeDispatchAndDurableAcknowledgement(t *testing.T) {
 	if !hub.Available(id) {
 		t.Fatal("not ready")
 	}
-	bot, e := s.CreateBot(store.Bot{Alias: "bot/test", Name: "Test", RunnerID: id, Adapter: "pi", Enabled: true})
+	bot, e := s.CreateBot(store.Bot{Alias: "bot/test", Name: "Test", RunnerID: id,Workspace:t.TempDir(), Adapter: "pi", Enabled: true})
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -187,7 +187,7 @@ func TestTerminalReportRetryAfterReconnectIsIdempotentlyAcknowledged(t *testing.
 	defer cancel()
 	url := "ws" + strings.TrimPrefix(server.URL, "http")
 	c := connectReady(t, ctx, url, id, token)
-	bot, err := s.CreateBot(store.Bot{Alias: "bot/retry", Name: "Retry", RunnerID: id, Adapter: "pi", Enabled: true})
+	bot, err := s.CreateBot(store.Bot{Alias: "bot/retry", Name: "Retry", RunnerID: id,Workspace:t.TempDir(), Adapter: "pi", Enabled: true})
 	if err != nil { t.Fatal(err) }
 	task, _, err := s.AdmitTask(bot.ID, "owner", "", []byte(`{"text":"work"}`))
 	if err != nil { t.Fatal(err) }
@@ -232,7 +232,7 @@ func TestCredentialRotationFencesLiveAcceptedAssignment(t *testing.T) {
 	defer cancel()
 	url := "ws" + strings.TrimPrefix(server.URL, "http")
 	c := connectReady(t, ctx, url, id, token)
-	bot, err := s.CreateBot(store.Bot{Alias: "bot/rotation", Name: "Rotation", RunnerID: id, Adapter: "pi", Enabled: true})
+	bot, err := s.CreateBot(store.Bot{Alias: "bot/rotation", Name: "Rotation", RunnerID: id,Workspace:t.TempDir(), Adapter: "pi", Enabled: true})
 	if err != nil { t.Fatal(err) }
 	task, _, err := s.AdmitTask(bot.ID, "owner", "", []byte(`{"text":"work"}`))
 	if err != nil { t.Fatal(err) }

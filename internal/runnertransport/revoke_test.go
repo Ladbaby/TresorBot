@@ -36,7 +36,7 @@ func TestRevocationFencesLiveAssignmentWithoutCertifyingTermination(t *testing.T
 	url := "ws" + strings.TrimPrefix(server.URL, "http")
 	c := connectReady(t, ctx, url, id, token)
 	defer c.CloseNow()
-	bot, err := s.CreateBot(store.Bot{Alias: "bot/revoke", Name: "Revoke", RunnerID: id, Enabled: true})
+	bot, err := s.CreateBot(store.Bot{Alias: "bot/revoke", Name: "Revoke", RunnerID: id,Workspace:t.TempDir(), Enabled: true})
 	if err != nil {
 		t.Fatal(err)
 	}

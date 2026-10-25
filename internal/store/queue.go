@@ -21,13 +21,15 @@ var schemaV2 = []string{
 }
 
 type Runner struct {
-	ID      string `json:"id"`
-	Name    string `json:"name"`
-	Revoked bool   `json:"revoked"`
+	ID               string `json:"id"`
+	Name             string `json:"name"`
+	Revoked          bool   `json:"revoked"`
+	DefaultWorkspace string `json:"default_workspace,omitempty"`
+	Platform         string `json:"platform,omitempty"`
 }
 
 func (s *Store) ListRunners() ([]Runner, error) {
-	rows, e := s.db.Query(`SELECT id,name,revoked FROM runners ORDER BY name,id`)
+	rows, e := s.db.Query(`SELECT id,name,revoked,default_workspace,platform FROM runners ORDER BY name,id`)
 	if e != nil {
 		return nil, e
 	}
@@ -35,7 +37,7 @@ func (s *Store) ListRunners() ([]Runner, error) {
 	out := []Runner{}
 	for rows.Next() {
 		var r Runner
-		if e = rows.Scan(&r.ID, &r.Name, &r.Revoked); e != nil {
+		if e = rows.Scan(&r.ID, &r.Name, &r.Revoked, &r.DefaultWorkspace, &r.Platform); e != nil {
 			return nil, e
 		}
 		out = append(out, r)

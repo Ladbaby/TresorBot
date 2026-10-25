@@ -15,6 +15,7 @@ var (
 	ErrConflict = errors.New("conflict")
 	ErrInvalid  = errors.New("invalid input or transition")
 	ErrDisabled = errors.New("bot disabled")
+	ErrWorkspaceRequired = errors.New("runner default workspace required")
 )
 
 type Store struct{ db *sql.DB }
@@ -56,8 +57,8 @@ func (s *Store) migrate() error {
 	if err = tx.QueryRow(`SELECT COALESCE(MAX(version),0) FROM schema_migrations`).Scan(&version); err != nil {
 		return err
 	}
-	if version > 3 {
-		return fmt.Errorf("database schema %d is newer than supported version 3", version)
+	if version > 4 {
+		return fmt.Errorf("database schema %d is newer than supported version 4", version)
 	}
 	if version == 0 {
 		for _, q := range schemaV1 {
@@ -84,6 +85,17 @@ func (s *Store) migrate() error {
 			return fmt.Errorf("migration 3: %w", err)
 		}
 		if _, err = tx.Exec(`INSERT INTO schema_migrations VALUES(3)`); err != nil {
+			return err
+		}
+	}
+	if version < 4 {
+		if _, err = tx.Exec(`ALTER TABLE runners ADD COLUMN default_workspace TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("migration 4: %w", err)
+		}
+		if _, err = tx.Exec(`ALTER TABLE runners ADD COLUMN platform TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("migration 4: %w", err)
+		}
+		if _, err = tx.Exec(`INSERT INTO schema_migrations VALUES(4)`); err != nil {
 			return err
 		}
 	}

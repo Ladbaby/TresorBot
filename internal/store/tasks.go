@@ -194,6 +194,21 @@ func claimTask(tx *sql.Tx, id, runner string) (Assignment, error) {
 	if active > 0 {
 		return Assignment{}, ErrConflict
 	}
+	if admitted.Workspace == "" {
+		if err = tx.QueryRow(`SELECT default_workspace FROM runners WHERE id=?`, runner).Scan(&admitted.Workspace); err != nil {
+			return Assignment{}, err
+		}
+		if admitted.Workspace == "" {
+			return Assignment{}, ErrWorkspaceRequired
+		}
+		snapshot, e := json.Marshal(admitted)
+		if e != nil {
+			return Assignment{}, e
+		}
+		if _, err = tx.Exec(`UPDATE tasks SET snapshot=? WHERE id=?`, string(snapshot), id); err != nil {
+			return Assignment{}, err
+		}
+	}
 	a := Assignment{uuid.NewString(), t.ID, runner, uuid.NewString(), t.Epoch + 1}
 	if _, err = tx.Exec(`INSERT INTO assignments(id,task_id,runner_id,execution_id,epoch) VALUES(?,?,?,?,?)`, a.ID, a.TaskID, a.RunnerID, a.ExecutionID, a.Epoch); err != nil {
 		return a, err

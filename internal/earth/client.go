@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"runtime"
 	"sync"
 	"time"
 
@@ -26,6 +27,9 @@ type Options struct {
 	SunURL, RunnerID, Token string
 	Journal                 *earthjournal.Journal
 	Executor                Executor
+	DefaultWorkspace        func() string
+	ConnectionChanged       func(bool, string)
+	ValidateRuntime         func() error
 }
 type worker struct {
 	cancel context.CancelFunc
@@ -37,6 +41,7 @@ type Client struct {
 	mu      sync.Mutex
 	workers map[string]*worker
 	wake    chan struct{}
+	refresh chan struct{}
 	wg      sync.WaitGroup
 }
 
@@ -51,7 +56,15 @@ func New(o Options) (*Client, error) {
 			return nil, errors.New("remote Sun requires TLS")
 		}
 	}
-	return &Client{o: o, workers: map[string]*worker{}, wake: make(chan struct{}, 1)}, nil
+	return &Client{o: o, workers: map[string]*worker{}, wake: make(chan struct{}, 1), refresh: make(chan struct{}, 1)}, nil
+}
+
+// RefreshSettings reconnects transport only; accepted workers retain their lifetimes.
+func (c *Client) RefreshSettings() {
+	select {
+	case c.refresh <- struct{}{}:
+	default:
+	}
 }
 func (c *Client) notify() {
 	select {
@@ -77,6 +90,19 @@ func (c *Client) Run(ctx context.Context) error {
 	}
 	delay := 100 * time.Millisecond
 	for {
+		if c.o.ValidateRuntime != nil {
+			if err := c.o.ValidateRuntime(); err != nil {
+				if c.o.ConnectionChanged != nil {
+					c.o.ConnectionChanged(false, err.Error())
+				}
+				select {
+				case <-ctx.Done():
+					return nil
+				case <-c.refresh:
+					continue
+				}
+			}
+		}
 		err := c.session(ctx)
 		if ctx.Err() != nil {
 			return nil
@@ -101,7 +127,7 @@ func (c *Client) Run(ctx context.Context) error {
 type authenticationError struct{}
 
 func (*authenticationError) Error() string {
-	return "Sun rejected runner credentials; issue or rotate the Earth credential"
+	return "Sun rejected Earth credentials; issue or rotate the Earth credential"
 }
 func (c *Client) record(kind string) contracts.RunnerRecord {
 	return contracts.RunnerRecord{Version: contracts.RunnerVersion, Type: kind, ID: contracts.NewID(), RunnerID: c.o.RunnerID}
@@ -135,7 +161,15 @@ func (c *Client) session(ctx context.Context) error {
 		}
 		return ws.Write(sessionCtx, websocket.MessageText, b)
 	}
-	if err = send(contracts.Control{RunnerRecord: c.record("hello")}); err != nil {
+	hello := contracts.Control{RunnerRecord: c.record("hello"), Platform: runtime.GOOS}
+	if c.o.DefaultWorkspace != nil {
+		hello.DefaultWorkspace = c.o.DefaultWorkspace()
+	}
+	if c.o.ConnectionChanged != nil {
+		c.o.ConnectionChanged(false, "connecting")
+		defer c.o.ConnectionChanged(false, "disconnected")
+	}
+	if err = send(hello); err != nil {
 		return err
 	}
 	evidence, err := c.o.Journal.Evidence(c.o.RunnerID)
@@ -209,6 +243,8 @@ func (c *Client) session(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+		case <-c.refresh:
+			return errors.New("Earth settings updated")
 		case <-c.wake:
 			if ready {
 				if err = replay(); err != nil {
@@ -230,6 +266,9 @@ func (c *Client) session(ctx context.Context) error {
 						return errors.New("duplicate readiness")
 					}
 					ready = true
+					if c.o.ConnectionChanged != nil {
+						c.o.ConnectionChanged(true, "connected")
+					}
 					records, e := c.o.Journal.List()
 					if e != nil {
 						return e
@@ -322,11 +361,15 @@ func (c *Client) launch(ctx context.Context, a contracts.Assign) error {
 	c.workers[a.AssignmentID] = w
 	c.wg.Add(1)
 	c.mu.Unlock()
+	executor := c.o.Executor
+	if pin, ok := executor.(interface{ SnapshotExecutor() Executor }); ok {
+		executor = pin.SnapshotExecutor()
+	}
 	go func() {
 		defer c.wg.Done()
 		defer cancel()
 		started := false
-		result, e := c.o.Executor.Execute(workerCtx, a, func(pid int, session string) error {
+		result, e := executor.Execute(workerCtx, a, func(pid int, session string) error {
 			err := c.o.Journal.MarkStarted(a.AssignmentID, a.RunnerID, a.Epoch, int64(pid), session)
 			if err == nil {
 				started = true

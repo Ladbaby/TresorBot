@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"strconv"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"tresorbot/internal/memory"
+	"tresorbot/internal/ownerauth"
 	"tresorbot/internal/store"
 )
 
@@ -23,6 +25,7 @@ type Options struct {
 	RunnerStatus                        func(string) string
 	RunnerChanged                       func(string)
 	TasksChanged                        func()
+	OwnerAuth                           *ownerauth.Store
 }
 type API struct {
 	s        *store.Store
@@ -70,7 +73,11 @@ func (a *API) route(w http.ResponseWriter, r *http.Request) {
 			csrf = token()
 		}
 		http.SetCookie(w, &http.Cookie{Name: "owner_csrf", Value: csrf, Path: "/", SameSite: http.SameSiteStrictMode, Secure: r.TLS != nil})
-		jsonOut(w, 200, map[string]any{"authenticated": a.auth(r), "password_required": a.o.AdminPassword != "" || !a.loopback(), "csrf_token": csrf})
+		authenticated := a.auth(r)
+		if authenticated {
+			a.renewSession(w, r)
+		}
+		jsonOut(w, 200, map[string]any{"authenticated": authenticated, "password_required": a.o.AdminPassword != "" || !a.loopback(), "csrf_token": csrf})
 		return
 	}
 	if r.URL.Path == "/api/auth/login" && r.Method == "POST" {
@@ -88,11 +95,13 @@ func (a *API) route(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, 403, "password required")
 			return
 		}
-		id := token()
-		a.mu.Lock()
-		a.sessions[id] = true
-		a.mu.Unlock()
-		http.SetCookie(w, &http.Cookie{Name: "owner_session", Value: id, Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode, Secure: r.TLS != nil})
+		id, err := a.issueSession()
+		if err != nil {
+			log.Printf("owner auth session issue failed")
+			writeErr(w, 503, "authentication unavailable")
+			return
+		}
+		http.SetCookie(w, &http.Cookie{Name: "owner_session", Value: id, Path: "/", HttpOnly: true, MaxAge: int(ownerauth.SessionLifetime.Seconds()), Expires: time.Now().Add(ownerauth.SessionLifetime), SameSite: http.SameSiteStrictMode, Secure: r.TLS != nil})
 		jsonOut(w, 200, map[string]bool{"ok": true})
 		return
 	}
@@ -101,9 +110,11 @@ func (a *API) route(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, 403, "request rejected")
 			return
 		}
-		a.mu.Lock()
-		delete(a.sessions, cookie(r, "owner_session"))
-		a.mu.Unlock()
+		if e := a.revokeSession(cookie(r, "owner_session")); e != nil {
+			log.Printf("owner auth session revoke failed")
+			writeErr(w, 503, "authentication unavailable")
+			return
+		}
 		http.SetCookie(w, &http.Cookie{Name: "owner_session", Value: "", Path: "/", MaxAge: -1, HttpOnly: true, SameSite: http.SameSiteStrictMode})
 		jsonOut(w, 200, map[string]bool{"ok": true})
 		return
@@ -112,6 +123,7 @@ func (a *API) route(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 401, "authentication required")
 		return
 	}
+	a.renewSession(w, r)
 	if mutation(r.Method) && !a.mutation(r) {
 		writeErr(w, 403, "request rejected")
 		return
@@ -151,9 +163,52 @@ func (a *API) auth(r *http.Request) bool {
 	if a.o.AdminPassword == "" && a.loopback() {
 		return true
 	}
+	id := cookie(r, "owner_session")
+	if id == "" {
+		return false
+	}
+	if a.o.OwnerAuth != nil {
+		ok, err := a.o.OwnerAuth.Valid(id)
+		if err != nil {
+			log.Printf("owner auth validation failed")
+			return false
+		}
+		return ok
+	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	return a.sessions[cookie(r, "owner_session")]
+	return a.sessions[id]
+}
+func (a *API) issueSession() (string, error) {
+	if a.o.OwnerAuth != nil {
+		return a.o.OwnerAuth.Issue()
+	}
+	id := token()
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.sessions[id] = true
+	return id, nil
+}
+func (a *API) revokeSession(id string) error {
+	if a.o.OwnerAuth != nil {
+		return a.o.OwnerAuth.Revoke(id)
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	delete(a.sessions, id)
+	return nil
+}
+func (a *API) renewSession(w http.ResponseWriter, r *http.Request) {
+	id := cookie(r, "owner_session")
+	if id == "" {
+		return
+	}
+	if a.o.OwnerAuth != nil {
+		if err := a.o.OwnerAuth.Renew(id); err != nil {
+			return
+		}
+	}
+	http.SetCookie(w, &http.Cookie{Name: "owner_session", Value: id, Path: "/", HttpOnly: true, MaxAge: int(ownerauth.SessionLifetime.Seconds()), Expires: time.Now().Add(ownerauth.SessionLifetime), SameSite: http.SameSiteStrictMode, Secure: r.TLS != nil})
 }
 func (a *API) mutation(r *http.Request) bool {
 	c, e := r.Cookie("owner_csrf")

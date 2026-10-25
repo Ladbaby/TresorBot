@@ -1,0 +1,6 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Earth</title>
+<style>body{font:16px system-ui;max-width:760px;margin:3rem auto;padding:0 1rem;color:#17212b}fieldset{margin:1rem 0;padding:1rem;border:1px solid #ccd3d9;border-radius:8px}label{display:block;margin:.8rem 0}input{display:block;width:100%;box-sizing:border-box;padding:.6rem}button{padding:.6rem 1rem}#message{min-height:1.5em}dd{overflow-wrap:anywhere;margin-bottom:.5rem}</style>
+<h1>Earth</h1><p id="message">Loading…</p><section id="login" hidden><label>Owner password<input id="password" type="password" autocomplete="current-password"></label><button id="loginButton">Sign in</button></section>
+<main id="app" hidden><h2>Local setup</h2><dl id="status"></dl><h2>Settings</h2><p>Settings save automatically when you leave a field. New assignments use the updated settings.</p><form id="settings"><label>Default workspace<input name="default_workspace"></label><details><summary>Advanced path overrides</summary><label>Node path<input name="node_path"></label><label>Pi path<input name="pi_path"></label><label>Pi CLI path<input name="pi_cli_path"></label></details><p><button type="submit">Save</button> <button type="button" id="logout">Sign out</button></p></form></main>
+<script src="/app.js"></script></html>

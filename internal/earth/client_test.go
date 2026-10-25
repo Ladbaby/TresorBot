@@ -48,7 +48,7 @@ func TestOutboundRunnerDispatchesAndPersistsTerminalResult(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	bot, e := s.CreateBot(store.Bot{Alias: "bot/test", Name: "Test", RunnerID: runner, Workspace: dir, Adapter: "pi", Enabled: true})
+	bot, e := s.CreateBot(store.Bot{Alias: "bot/test", Name: "Test", RunnerID: runner, Adapter: "pi", Enabled: true})
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -62,7 +62,7 @@ func TestOutboundRunnerDispatchesAndPersistsTerminalResult(t *testing.T) {
 	}
 	defer journal.Close()
 	executor := &completingExecutor{calls: make(chan string, 2)}
-	client, e := earth.New(earth.Options{SunURL: server.URL, RunnerID: runner, Token: token, Journal: journal, Executor: executor})
+	client, e := earth.New(earth.Options{SunURL: server.URL, RunnerID: runner, Token: token, Journal: journal, Executor: executor, DefaultWorkspace: func() string { return dir }})
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -92,6 +92,10 @@ func TestOutboundRunnerDispatchesAndPersistsTerminalResult(t *testing.T) {
 			t.Fatal(e)
 		}
 		if got.State == "completed" {
+			var pinned store.Bot
+			if json.Unmarshal(got.Snapshot, &pinned) != nil || pinned.Workspace != dir {
+				t.Fatal("inherited workspace not pinned", string(got.Snapshot))
+			}
 			var result map[string]string
 			if json.Unmarshal(got.Result, &result) != nil || result["text"] != "test result" {
 				t.Fatal(string(got.Result))

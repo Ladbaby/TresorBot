@@ -3,6 +3,7 @@ package contracts
 import (
 	"encoding/json"
 	"errors"
+	"strings"
 )
 
 // MaxRunnerRecordBytes bounds both control frames and durable outbox records.
@@ -24,6 +25,8 @@ type Control struct {
 	Assignments []AssignmentEvidence `json:"assignments,omitempty"`
 	Sequence    uint64               `json:"sequence,omitempty"`
 	EventID     string               `json:"event_id,omitempty"`
+	DefaultWorkspace string          `json:"default_workspace,omitempty"`
+	Platform    string               `json:"platform,omitempty"`
 }
 
 func (c Control) Validate() error {
@@ -31,12 +34,16 @@ func (c Control) Validate() error {
 		return err
 	}
 	switch c.Type {
-	case "hello", "heartbeat", "ready":
-		if c.AssignmentID != "" || c.Epoch != 0 || len(c.Assignments) != 0 || c.Sequence != 0 || c.EventID != "" {
+	case "hello":
+		if c.AssignmentID != "" || c.Epoch != 0 || len(c.Assignments) != 0 || c.Sequence != 0 || c.EventID != "" || len(c.DefaultWorkspace) > 4096 || len(c.Platform) > 256 || strings.ContainsRune(c.DefaultWorkspace, 0) || strings.ContainsRune(c.Platform, 0) {
+			return errors.New("invalid hello metadata")
+		}
+	case "heartbeat", "ready":
+		if c.AssignmentID != "" || c.Epoch != 0 || len(c.Assignments) != 0 || c.Sequence != 0 || c.EventID != "" || c.DefaultWorkspace != "" || c.Platform != "" {
 			return errors.New("invalid connection record")
 		}
 	case "reconcile":
-		if c.AssignmentID != "" || c.Epoch != 0 || c.Sequence != 0 || c.EventID != "" || len(c.Assignments) > 1000 {
+		if c.AssignmentID != "" || c.Epoch != 0 || c.Sequence != 0 || c.EventID != "" || len(c.Assignments) > 1000 || c.DefaultWorkspace != "" || c.Platform != "" {
 			return errors.New("invalid reconciliation")
 		}
 		seen := map[string]bool{}
@@ -52,7 +59,7 @@ func (c Control) Validate() error {
 			}
 		}
 	case "cancel", "event_ack", "terminal_ack":
-		if c.AssignmentID == "" || len(c.Assignments) != 0 {
+		if c.AssignmentID == "" || len(c.Assignments) != 0 || c.DefaultWorkspace != "" || c.Platform != "" {
 			return errors.New("missing assignment identity")
 		}
 		if c.Type == "cancel" && (c.Sequence != 0 || c.EventID != "") {

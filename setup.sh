@@ -125,7 +125,7 @@ for component in "${roles[@]}"; do
     if [[ "$component" == sun ]]; then
         printf 'Sun: choose your owner password and tokens, then run:\n'
     else
-        printf 'Earth: install Node.js and Pi (1.0.2 is the tested version; other versions are allowed), enroll in Sun, then fill in the runner credential and Pi CLI path. Run:\n'
+        printf 'Earth: install Node.js and Pi Agent, enroll this Earth in Sun, then review Earth config. Run:\n'
     fi
     printf '  "%s/tresorbot-%s" --config "%s/%s.yaml"\n' "$bin_dir" "$component" "$config_dir" "$component"
 done

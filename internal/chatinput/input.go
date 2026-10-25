@@ -39,9 +39,10 @@ func Parse(raw json.RawMessage, requestedAlias string) (Input, error) {
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
 	var wire struct {
-		Model    json.RawMessage `json:"model"`
-		Messages json.RawMessage `json:"messages"`
-		Stream   json.RawMessage `json:"stream"`
+		Model         json.RawMessage `json:"model"`
+		Messages      json.RawMessage `json:"messages"`
+		Stream        json.RawMessage `json:"stream"`
+		StreamOptions json.RawMessage `json:"stream_options"`
 	}
 	if err := dec.Decode(&wire); err != nil {
 		return in, fmt.Errorf("%w: %v", ErrInvalidInput, err)
@@ -61,6 +62,24 @@ func Parse(raw json.RawMessage, requestedAlias string) (Input, error) {
 		}
 		if err := json.Unmarshal(wire.Stream, &in.Stream); err != nil {
 			return Input{}, fmt.Errorf("%w: stream must be boolean", ErrInvalidInput)
+		}
+	}
+	// Usage is not available for the composed bot execution. Accept this standard
+	// client preference without fabricating usage or passing it into Pi.
+	if len(wire.StreamOptions) != 0 && !bytes.Equal(bytes.TrimSpace(wire.StreamOptions), []byte("null")) {
+		var options struct {
+			IncludeUsage json.RawMessage `json:"include_usage"`
+		}
+		d := json.NewDecoder(bytes.NewReader(wire.StreamOptions))
+		d.DisallowUnknownFields()
+		if err := d.Decode(&options); err != nil {
+			return Input{}, fmt.Errorf("%w: invalid stream_options: %v", ErrInvalidInput, err)
+		}
+		if len(options.IncludeUsage) != 0 {
+			var include bool
+			if bytes.Equal(bytes.TrimSpace(options.IncludeUsage), []byte("null")) || json.Unmarshal(options.IncludeUsage, &include) != nil {
+				return Input{}, fmt.Errorf("%w: include_usage must be boolean", ErrInvalidInput)
+			}
 		}
 	}
 	var messages []json.RawMessage

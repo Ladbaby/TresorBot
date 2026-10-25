@@ -16,6 +16,7 @@ import (
 	"tresorbot/internal/piadapter"
 	"tresorbot/internal/relay"
 	"tresorbot/internal/runnertransport"
+	"tresorbot/internal/runtimepath"
 	"tresorbot/internal/store"
 )
 
@@ -25,11 +26,11 @@ var (
 )
 
 type Config struct {
-	NodePath, CLIPath   string
-	Tools               []string
-	StateDir            string
-	RequireGatewayScope bool
-	Authorize           func(context.Context, contracts.Assign, string) (relay.Authorization, error)
+	NodePath, CLIPath, PiPath string
+	Tools                     []string
+	StateDir                  string
+	RequireGatewayScope       bool
+	Authorize                 func(context.Context, contracts.Assign, string) (relay.Authorization, error)
 }
 
 type adapterRunner func(context.Context, piadapter.Request, func(piadapter.Progress), func(int, string) error) (piadapter.Result, error)
@@ -47,7 +48,11 @@ func New(c Config) *Executor {
 		}
 	}
 	return newExecutor(c, func(ctx context.Context, req piadapter.Request, progress func(piadapter.Progress), started func(int, string) error) (piadapter.Result, error) {
-		a := piadapter.New(piadapter.Config{NodePath: c.NodePath, CLIPath: c.CLIPath, Tools: c.Tools, OnStarted: started, Diagnostic: diagnostic})
+		resolved, err := runtimepath.Resolve(runtimepath.Options{NodePath: c.NodePath, PiPath: c.PiPath, PiCLIPath: c.CLIPath})
+		if err != nil {
+			return piadapter.Result{}, err
+		}
+		a := piadapter.New(piadapter.Config{NodePath: resolved.NodePath, CLIPath: resolved.CLIPath, Tools: c.Tools, OnStarted: started, Diagnostic: diagnostic})
 		return a.Run(ctx, req, progress)
 	})
 }

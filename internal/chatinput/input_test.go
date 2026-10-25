@@ -29,6 +29,29 @@ func TestParsePreservesTextRolesAndStream(t *testing.T) {
 	}
 }
 
+func TestParseAcceptsStandardStreamUsagePreference(t *testing.T) {
+	for _, options := range []string{`{"include_usage":true}`, `{"include_usage":false}`, `{}`, `null`} {
+		raw := json.RawMessage(`{"model":"a","stream":true,"stream_options":` + options + `,"messages":[{"role":"user","content":"test message"}]}`)
+		got, err := Parse(raw, "a")
+		if err != nil {
+			t.Fatal(options, err)
+		}
+		if !got.Stream || len(got.Messages) != 1 || got.Messages[0].Content != "test message" {
+			t.Fatal(got)
+		}
+		serialized, _ := json.Marshal(got)
+		if strings.Contains(string(serialized), "stream_options") {
+			t.Fatal("client usage preference forwarded into task")
+		}
+	}
+	for _, options := range []string{`{"include_usage":"true"}`, `{"include_usage":null}`, `{"include_usage":1}`, `{"unexpected":true}`, `[]`, `true`} {
+		raw := json.RawMessage(`{"model":"a","stream_options":` + options + `,"messages":[{"role":"user","content":"x"}]}`)
+		if _, err := Parse(raw, "a"); err == nil {
+			t.Fatal("accepted invalid options", options)
+		}
+	}
+}
+
 func TestParseRejectsUnsupportedSemantics(t *testing.T) {
 	cases := []struct{ name, body string }{
 		{"null stream", `{"model":"a","stream":null,"messages":[{"role":"user","content":"x"}]}`},

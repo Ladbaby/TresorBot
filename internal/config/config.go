@@ -21,14 +21,16 @@ func (c Config) ValidateEarthRuntime() error {
 		return fmt.Errorf("Earth runtime requires earth configuration")
 	}
 	if strings.TrimSpace(c.RunnerToken) == "" {
-		return fmt.Errorf("Earth requires runner_token; issue a credential from Sun's Runners tab")
+		return fmt.Errorf("Earth requires runner_token; issue a credential from Sun's Earth tab")
 	}
-	if c.PiCLIPath == "" {
-		return fmt.Errorf("Earth requires pi_cli_path for the tested Pi installation")
+	if c.PiCLIPath != "" && c.PiPath != "" {
+		return fmt.Errorf("choose pi_path or pi_cli_path, not both")
 	}
-	info, err := os.Stat(c.PiCLIPath)
-	if err != nil || !info.Mode().IsRegular() {
-		return fmt.Errorf("pi_cli_path must identify an installed Pi CLI file")
+	if c.PiCLIPath != "" {
+		info, err := os.Stat(c.PiCLIPath)
+		if err != nil || !info.Mode().IsRegular() {
+			return fmt.Errorf("pi_cli_path must identify an installed Pi CLI file")
+		}
 	}
 	return nil
 }
@@ -45,6 +47,9 @@ type Config struct {
 	RunnerToken         string   `yaml:"runner_token"`
 	NodePath            string   `yaml:"node_path"`
 	PiCLIPath           string   `yaml:"pi_cli_path"`
+	PiPath              string   `yaml:"pi_path"`
+	DefaultWorkspace    string   `yaml:"default_workspace"`
+	UIDisabled          bool     `yaml:"ui_disabled"`
 	PiTools             []string `yaml:"pi_tools"`
 	IntegrationToken    string   `yaml:"integration_token"`
 	GatewayURL          string   `yaml:"gateway_url"`
@@ -105,7 +110,11 @@ func Load(path, role string) (Config, error) {
 	}
 	c.Role = role
 	if c.BindAddr == "" {
-		c.BindAddr = "127.0.0.1:11520"
+		if role == "earth" {
+			c.BindAddr = "127.0.0.1:11521"
+		} else {
+			c.BindAddr = "127.0.0.1:11520"
+		}
 	}
 	if c.DBPath == "" {
 		c.DBPath = "tresorbot.db"
@@ -155,16 +164,30 @@ func Load(path, role string) (Config, error) {
 		if strings.TrimSpace(c.RunnerToken) != c.RunnerToken || strings.ContainsAny(c.RunnerToken, "\r\n\x00") {
 			return Config{}, fmt.Errorf("invalid runner_token")
 		}
-		if c.NodePath == "" {
-			c.NodePath = "node"
+		if !c.UIDisabled {
+			host, port, err := net.SplitHostPort(c.BindAddr)
+			n, e := strconv.Atoi(port)
+			if err != nil || e != nil || n < 1 || n > 65535 {
+				return Config{}, fmt.Errorf("invalid Earth bind_addr")
+			}
+			ip := net.ParseIP(host)
+			if host != "localhost" && (ip == nil || !ip.IsLoopback()) && c.AdminPassword == "" {
+				return Config{}, fmt.Errorf("non-loopback Earth bind_addr requires admin_password")
+			}
 		}
-		for _, p := range []*string{&c.NodePath, &c.PiCLIPath} {
+		for _, p := range []*string{&c.NodePath, &c.PiCLIPath, &c.PiPath} {
 			if strings.ContainsAny(*p, "\r\n\x00") {
 				return Config{}, fmt.Errorf("invalid runtime path")
 			}
 			if *p != "" && !filepath.IsAbs(*p) && strings.ContainsAny(*p, "/\\") {
 				*p = filepath.Join(filepath.Dir(path), *p)
 			}
+		}
+		if strings.ContainsAny(c.DefaultWorkspace, "\r\n\x00") || len(c.DefaultWorkspace) > 4096 {
+			return Config{}, fmt.Errorf("invalid default_workspace")
+		}
+		if c.DefaultWorkspace != "" && !filepath.IsAbs(c.DefaultWorkspace) {
+			return Config{}, fmt.Errorf("default_workspace must be absolute")
 		}
 		allowed := map[string]bool{"read": true, "bash": true, "powershell": true, "edit": true, "write": true, "grep": true, "find": true, "ls": true}
 		seen := map[string]bool{}

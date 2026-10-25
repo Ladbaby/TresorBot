@@ -24,6 +24,7 @@ func TestDelegationReattachesChildAndRejectsChangedContext(t *testing.T) {
 	}
 	runner, err := s.CreateRunner("earth")
 	must(err)
+ must(s.UpdateRunnerMetadata(runner,t.TempDir(),"test"))
 	parent, err := s.CreateBot(store.Bot{Alias: "bot/parent", Name: "Parent", Enabled: true, RunnerID: runner})
 	must(err)
 	specialist, err := s.CreateBot(store.Bot{Alias: "bot/specialist", Name: "Specialist", Enabled: true, RunnerID: runner, Instructions: "PRIVATE"})

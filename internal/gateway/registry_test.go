@@ -27,7 +27,7 @@ func TestFailedRevocationSurvivesRestartAndRejectsChangedGateway(t *testing.T) {
 	defer func() { s.Close() }()
 	runner, err := s.CreateRunner("earth")
 	must(err)
-	bot, err := s.CreateBot(store.Bot{Alias: "bot/test", Name: "Test", Enabled: true, RunnerID: runner})
+	bot, err := s.CreateBot(store.Bot{Alias: "bot/test", Name: "Test", Enabled: true, RunnerID: runner,Workspace:t.TempDir()})
 	must(err)
 	task, _, err := s.AdmitTask(bot.ID, "owner", "", []byte(`{"text":"work"}`))
 	must(err)
@@ -240,7 +240,7 @@ func TestRegistrationIsDurableAndOneShot(t *testing.T) {
 			if e != nil {
 				t.Fatal(e)
 			}
-			bot, e := s.CreateBot(store.Bot{Alias: "bot/personal", Name: "Personal", RunnerID: runner, Enabled: true})
+			bot, e := s.CreateBot(store.Bot{Alias: "bot/personal", Name: "Personal", RunnerID: runner, Enabled: true,Workspace:t.TempDir()})
 			if e != nil {
 				t.Fatal(e)
 			}
