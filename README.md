@@ -66,7 +66,7 @@ Else, for a source build, follow these steps:
 6. Earth automatically creates and uses **`~/.tresorbot/workspace`** on its machine. To change it, open Earth's local dashboard at **http://127.0.0.1:11521**. In Sun's **Bots** tab, create `bot/personal` and select the Earth.
 
 
-### Run as systemd services (Linux)
+### Run as user-space systemd services (Linux)
 
 You can run TresorBot as user services—no `sudo` needed, and they start on login. 
 Finish configuring each component first and stop any copy running in your terminal.
@@ -74,7 +74,7 @@ Finish configuring each component first and stop any copy running in your termin
 ```bash
 role=sun # Change to earth on a runner machine.
 mkdir -p ~/.config/systemd/user
-cat > ~/.config/systemd/user/tresorbot-$role.service <<EOF
+cat > ~/.config/systemd/user/tresorbot-$role.service <<EOF # also include the node path in Environment below
 [Unit]
 Description=TresorBot $role
 
@@ -101,6 +101,47 @@ journalctl --user -u tresorbot-$role.service -f
 ```
 
 To start at boot and keep running after logout, enable lingering once: `sudo loginctl enable-linger "$USER"`.
+
+#### Run as global-space systemd services (Linux)
+
+Alternatively, install units under `/etc/systemd/system`.
+Run these commands as the account that owns the installed binaries and configs.
+
+```bash
+role=earth # Change to sun for Sun; repeat for both if needed.
+service_user=$(id -un)
+service_home=$HOME
+sudo tee /etc/systemd/system/tresorbot-$role.service >/dev/null <<EOF
+[Unit]
+Description=TresorBot $role
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=$service_user
+Environment="HOME=$service_home"
+Environment="PATH=$service_home/.local/bin:$service_home/.pi/agent/bin:/usr/local/bin:/usr/bin:/bin"
+ExecStart="$service_home/.local/bin/tresorbot-$role" --config "$service_home/.config/tresorbot/$role.yaml"
+WorkingDirectory=$service_home/.config/tresorbot
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+sudo systemctl daemon-reload
+sudo systemctl enable --now tresorbot-$role.service
+sudo systemctl status tresorbot-$role.service --no-pager
+
+# Follow logs, restart after config changes, or stop:
+sudo journalctl -u tresorbot-$role.service -f
+# sudo systemctl restart tresorbot-$role.service
+# sudo systemctl stop tresorbot-$role.service
+```
+
+If Node is installed through nvm, add the directory containing `node` to the unit's `PATH`, or set `node_path` in `earth.yaml`.
 
 ## Connect Tresor
 
