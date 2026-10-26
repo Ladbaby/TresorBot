@@ -91,7 +91,9 @@ func fromPi(p string) (string, error) {
 		return "", fmt.Errorf("Pi executable not found: %s", abs)
 	}
 	dir := filepath.Dir(abs)
-	if _, e = os.Stat(filepath.Join(dir, "pi-launcher.js")); e == nil {
+	_, launcherErr := os.Stat(filepath.Join(dir, "pi-launcher.js"))
+	_, pointerErr := os.Stat(filepath.Join(filepath.Dir(dir), "install", "current-version"))
+	if launcherErr == nil || pointerErr == nil {
 		if cli, err := managed(filepath.Dir(dir)); err == nil {
 			return cli, nil
 		} else {
@@ -110,10 +112,30 @@ func fromPi(p string) (string, error) {
 	}
 	return "", errors.New("unrecognized Pi wrapper; set pi_cli_path to its JavaScript entry or pi_path to a managed/npm Pi installation")
 }
-func activeNodeBin(home string)string{
- root:=os.Getenv("NVM_DIR");if root==""{root=filepath.Join(home,".nvm")}
- if regular(filepath.Join(root,"current","bin","node")){return filepath.Join(root,"current","bin")}
- b,e:=os.ReadFile(filepath.Join(root,"alias","default"));if e!=nil{return ""};v:=strings.TrimSpace(string(b));if !regexp.MustCompile(`^v?[0-9]+\.[0-9]+\.[0-9]+$`).MatchString(v){return ""};if !strings.HasPrefix(v,"v"){v="v"+v};dir:=filepath.Join(root,"versions","node",v,"bin");if regular(filepath.Join(dir,"node")){return dir};return ""
+func activeNodeBin(home string) string {
+	root := os.Getenv("NVM_DIR")
+	if root == "" {
+		root = filepath.Join(home, ".nvm")
+	}
+	if regular(filepath.Join(root, "current", "bin", "node")) {
+		return filepath.Join(root, "current", "bin")
+	}
+	b, e := os.ReadFile(filepath.Join(root, "alias", "default"))
+	if e != nil {
+		return ""
+	}
+	v := strings.TrimSpace(string(b))
+	if !regexp.MustCompile(`^v?[0-9]+\.[0-9]+\.[0-9]+$`).MatchString(v) {
+		return ""
+	}
+	if !strings.HasPrefix(v, "v") {
+		v = "v" + v
+	}
+	dir := filepath.Join(root, "versions", "node", v, "bin")
+	if regular(filepath.Join(dir, "node")) {
+		return dir
+	}
+	return ""
 }
 
 func Resolve(o Options) (Runtime, error) {
@@ -142,8 +164,10 @@ func Resolve(o Options) (Runtime, error) {
 			candidates = append(candidates, p)
 		}
 		home, _ := os.UserHomeDir()
-        if active:=activeNodeBin(home);active!=""{candidates=append(candidates,filepath.Join(active,"pi"),filepath.Join(active,"pi.cmd"))}
-		candidates = append(candidates, filepath.Join(home, ".pi", "agent", "bin", "pi"), filepath.Join(home, ".local", "bin", "pi"),filepath.Join(home,".npm-global","bin","pi"), "/opt/homebrew/bin/pi", "/usr/local/bin/pi")
+		if active := activeNodeBin(home); active != "" {
+			candidates = append(candidates, filepath.Join(active, "pi"), filepath.Join(active, "pi.cmd"))
+		}
+		candidates = append(candidates, filepath.Join(home, ".pi", "agent", "bin", "pi"), filepath.Join(home, ".local", "bin", "pi"), filepath.Join(home, ".npm-global", "bin", "pi"), "/opt/homebrew/bin/pi", "/usr/local/bin/pi")
 		if runtime.GOOS == "windows" {
 			candidates = append(candidates, filepath.Join(home, ".pi", "agent", "bin", "pi.cmd"), filepath.Join(os.Getenv("APPDATA"), "npm", "pi.cmd"))
 		}
@@ -173,9 +197,16 @@ func Resolve(o Options) (Runtime, error) {
 	if runtime.GOOS == "windows" {
 		names = append(names, filepath.Join(os.Getenv("NVM_SYMLINK"), "node.exe"), filepath.Join(os.Getenv("ProgramFiles"), "nodejs", "node.exe"))
 	}
-	if active:=activeNodeBin(home);active!=""{names=append([]string{filepath.Join(active,"node"),filepath.Join(active,"node.exe")},names...)}
-    // npm's versioned installation may live beside its Node binary.
-    for dir:=filepath.Dir(r.CLIPath);dir!=filepath.Dir(dir);dir=filepath.Dir(dir){if filepath.Base(dir)=="lib"{names=append([]string{filepath.Join(filepath.Dir(dir),"bin","node")},names...);break}}
+	if active := activeNodeBin(home); active != "" {
+		names = append([]string{filepath.Join(active, "node"), filepath.Join(active, "node.exe")}, names...)
+	}
+	// npm's versioned installation may live beside its Node binary.
+	for dir := filepath.Dir(r.CLIPath); dir != filepath.Dir(dir); dir = filepath.Dir(dir) {
+		if filepath.Base(dir) == "lib" {
+			names = append([]string{filepath.Join(filepath.Dir(dir), "bin", "node")}, names...)
+			break
+		}
+	}
 	for _, p := range names {
 		if regular(p) {
 			if r.NodePath, e = executable(p); e == nil {
