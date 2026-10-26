@@ -347,7 +347,7 @@ func TestClaimUsesAdmittedRunnerSnapshot(t *testing.T) {
 	must(t, err)
 	second, err := s.CreateRunner("second")
 	must(t, err)
-	b, err := s.CreateBot(Bot{Alias: "bot/pinned", Name: "Pinned", RunnerID: first,Workspace:t.TempDir(), Enabled: true})
+	b, err := s.CreateBot(Bot{Alias: "bot/pinned", Name: "Pinned", RunnerID: first, Workspace: t.TempDir(), Enabled: true})
 	must(t, err)
 	task, _, err := s.AdmitTask(b.ID, "", "", []byte(`{}`))
 	must(t, err)
@@ -399,6 +399,63 @@ func TestCRUDValidationAndNoKeyAdmission(t *testing.T) {
 	must(t, err)
 	if len(list) != 0 {
 		t.Fatal(list)
+	}
+}
+
+func TestExecutionUncertainRetainsAssignmentUntilAuthoritativeTerminal(t *testing.T) {
+	s := openTest(t)
+	b := botTest(t, s, "bot/uncertain")
+	runner, err := s.CreateRunner("runner")
+	must(t, err)
+	task, _, err := s.AdmitTask(b.ID, "", "", []byte(`{}`))
+	must(t, err)
+	a, err := s.ClaimTask(task.ID, runner)
+	must(t, err)
+	must(t, s.Accept(a))
+	event := Report{AssignmentID: a.ID, RunnerID: runner, Epoch: a.Epoch, EventID: uuid.NewString(), Sequence: 1, Kind: "execution_uncertain", Payload: json.RawMessage(`{"reason":"executor_failed_after_start"}`)}
+	must(t, s.RecordEvent(event))
+	must(t, s.RecordEvent(event))
+	got, err := s.GetTask(task.ID)
+	must(t, err)
+	if got.State != "needs_attention" || got.AssignmentID != a.ID {
+		t.Fatal(got)
+	}
+	if _, err = s.ClaimTask(task.ID, runner); !errors.Is(err, ErrConflict) {
+		t.Fatal("uncertain task released bot slot", err)
+	}
+	stale := event
+	stale.Epoch++
+	if err = s.RecordEvent(stale); !errors.Is(err, ErrConflict) {
+		t.Fatal("stale uncertainty accepted", err)
+	}
+	must(t, s.CancelTask(task.ID))
+	got, err = s.GetTask(task.ID)
+	must(t, err)
+	if got.State != "needs_attention" || !got.CancelRequested {
+		t.Fatal("cancellation state not preserved", got)
+	}
+	terminal := contracts.Terminal{RunnerRecord: contracts.RunnerRecord{Version: 1, Type: "terminal", ID: uuid.NewString(), RunnerID: runner, AssignmentID: a.ID, Epoch: a.Epoch}, State: contracts.Failed, Error: &contracts.Error{Code: "execution_failed", Message: "execution ended"}}
+	must(t, s.RecordTerminal(terminal, 2))
+	got, err = s.GetTask(task.ID)
+	must(t, err)
+	if got.State != "failed" {
+		t.Fatal("authoritative terminal did not settle uncertain task", got)
+	}
+}
+
+func TestExecutionUncertainRejectsMalformedPayload(t *testing.T) {
+	s := openTest(t)
+	b := botTest(t, s, "bot/uncertain-payload")
+	runner, err := s.CreateRunner("runner")
+	must(t, err)
+	task, _, err := s.AdmitTask(b.ID, "", "", []byte(`{}`))
+	must(t, err)
+	a, err := s.ClaimTask(task.ID, runner)
+	must(t, err)
+	must(t, s.Accept(a))
+	r := Report{AssignmentID: a.ID, RunnerID: runner, Epoch: a.Epoch, EventID: uuid.NewString(), Sequence: 1, Kind: "execution_uncertain", Payload: json.RawMessage(`{"reason":"unsafe"}`)}
+	if err = s.RecordEvent(r); !errors.Is(err, ErrInvalid) {
+		t.Fatal(err)
 	}
 }
 

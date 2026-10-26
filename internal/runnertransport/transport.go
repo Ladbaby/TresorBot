@@ -272,6 +272,24 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 				reconciled = true
+				if source, ok := h.store.(interface {
+					CurrentRunnerAssignments(string) ([]store.RunnerAssignment, error)
+				}); ok {
+					assignments, readErr := source.CurrentRunnerAssignments(id)
+					if readErr != nil {
+						return
+					}
+					for _, evidence := range m.Assignments {
+						for _, assignment := range assignments {
+							if assignment.ID == evidence.AssignmentID && assignment.Epoch == evidence.Epoch && contracts.TaskState(assignment.State).IsTerminal() {
+								retire := contracts.Control{RunnerRecord: contracts.RunnerRecord{Version: contracts.RunnerVersion, Type: "retire", ID: uuid.NewString(), RunnerID: id, AssignmentID: assignment.ID, Epoch: assignment.Epoch}}
+								if h.send(r.Context(), id, c, retire) != nil {
+									return
+								}
+							}
+						}
+					}
+				}
 				if err = h.send(r.Context(), id, c, contracts.Control{RunnerRecord: contracts.RunnerRecord{Version: contracts.RunnerVersion, Type: "ready", ID: uuid.NewString(), RunnerID: id}}); err != nil {
 					return
 				}

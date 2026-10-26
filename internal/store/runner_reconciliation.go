@@ -60,6 +60,11 @@ func (s *Store) ReconcileRunnerAssignment(runnerID string, e contracts.Assignmen
 	if err != nil {
 		return err
 	}
+	// An authoritative terminal decision fences all subsequent runner reports.
+	// A retired local journal may acknowledge discarded reports after owner abandonment.
+	if terminal(t.State) {
+		return tx.Commit()
+	}
 	var last uint64
 	if err = tx.QueryRow(`SELECT COALESCE(MAX(sequence),0) FROM task_events WHERE assignment_id=?`, e.AssignmentID).Scan(&last); err != nil {
 		return err

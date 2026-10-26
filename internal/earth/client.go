@@ -261,6 +261,15 @@ func (c *Client) session(ctx context.Context) error {
 					return errors.New("runner identity mismatch")
 				}
 				switch m.Type {
+				case "retire":
+					if err = c.o.Journal.Retire(m.AssignmentID, m.RunnerID, m.Epoch); err != nil {
+						return err
+					}
+					c.mu.Lock()
+					if worker := c.workers[m.AssignmentID]; worker != nil && !worker.live {
+						delete(c.workers, m.AssignmentID)
+					}
+					c.mu.Unlock()
 				case "ready":
 					if ready {
 						return errors.New("duplicate readiness")
@@ -404,6 +413,17 @@ func (c *Client) launch(ctx context.Context, a contracts.Assign) error {
 		// An executor error after start is not proof descendant processes stopped.
 		safe := !started || result.Completed || result.Cancelled
 		if !safe {
+			record, err := c.o.Journal.Get(a.AssignmentID)
+			if err != nil {
+				return
+			}
+			uncertain := contracts.Event{RunnerRecord: c.record("event"), Sequence: record.LastSequence + 1, EventID: contracts.NewID(), Kind: "execution_uncertain"}
+			uncertain.AssignmentID = a.AssignmentID
+			uncertain.Epoch = a.Epoch
+			uncertain.Payload = json.RawMessage(`{"reason":"executor_failed_after_start"}`)
+			if _, err = c.o.Journal.Append(a.AssignmentID, a.RunnerID, a.Epoch, uncertain); err == nil {
+				c.notify()
+			}
 			return
 		}
 		terminal := contracts.Terminal{RunnerRecord: c.record("terminal"), State: contracts.Completed}

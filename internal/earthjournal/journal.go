@@ -153,6 +153,22 @@ func (j *Journal) get(id string) (Record, error) {
 	return r, nil
 }
 
+// Retire accepts an authenticated Sun terminal decision without inventing a local outcome.
+// It suppresses replay and launch of a historical assignment; it never kills a process.
+func (j *Journal) Retire(id, runner string, epoch int64) error {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	r, err := j.get(id)
+	if err != nil {
+		return err
+	}
+	if r.Assignment.RunnerID != runner || r.Assignment.Epoch != epoch {
+		return ErrIdentity
+	}
+	_, err = j.db.Exec(`UPDATE assignments SET state=?,ack_seq=next_seq-1 WHERE id=?`, Terminal, id)
+	return err
+}
+
 // Get returns the durable assignment and current lifecycle evidence.
 func (j *Journal) Get(id string) (Record, error) { return j.get(id) }
 

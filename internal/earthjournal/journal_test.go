@@ -23,6 +23,32 @@ func openTest(t *testing.T, cap int) (*Journal, string) {
 	}
 	return j, p
 }
+func TestAuthoritativeRetirementPreventsHistoricalLaunch(t *testing.T) {
+	j, path := openTest(t, 4)
+	a := assign()
+	if _, err := j.Admit(a); err != nil {
+		t.Fatal(err)
+	}
+	if err := j.Retire(a.AssignmentID, a.RunnerID, a.Epoch+1); !errors.Is(err, ErrIdentity) {
+		t.Fatal(err)
+	}
+	if err := j.Retire(a.AssignmentID, a.RunnerID, a.Epoch); err != nil {
+		t.Fatal(err)
+	}
+	if err := j.Retire(a.AssignmentID, a.RunnerID, a.Epoch); err != nil {
+		t.Fatal(err)
+	}
+	j.Close()
+	j, err := Open(path, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer j.Close()
+	if err = j.BeginLaunch(a.AssignmentID, a.RunnerID, a.Epoch); !errors.Is(err, ErrIneligible) {
+		t.Fatal("retired assignment eligible", err)
+	}
+}
+
 func TestAdmitConflictAndRestartRecovery(t *testing.T) {
 	j, p := openTest(t, 4)
 	a := assign()

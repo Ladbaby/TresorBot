@@ -22,11 +22,11 @@ type AssignmentEvidence struct {
 // Assignment payloads and reports retain their separately validated types.
 type Control struct {
 	RunnerRecord
-	Assignments []AssignmentEvidence `json:"assignments,omitempty"`
-	Sequence    uint64               `json:"sequence,omitempty"`
-	EventID     string               `json:"event_id,omitempty"`
-	DefaultWorkspace string          `json:"default_workspace,omitempty"`
-	Platform    string               `json:"platform,omitempty"`
+	Assignments      []AssignmentEvidence `json:"assignments,omitempty"`
+	Sequence         uint64               `json:"sequence,omitempty"`
+	EventID          string               `json:"event_id,omitempty"`
+	DefaultWorkspace string               `json:"default_workspace,omitempty"`
+	Platform         string               `json:"platform,omitempty"`
 }
 
 func (c Control) Validate() error {
@@ -58,7 +58,13 @@ func (c Control) Validate() error {
 				return errors.New("invalid journal state")
 			}
 		}
-	case "cancel", "event_ack", "terminal_ack":
+	case "cancel", "event_ack", "terminal_ack", "retire":
+		if c.Type == "retire" {
+			if c.AssignmentID == "" || c.Sequence != 0 || c.EventID != "" || len(c.Assignments) != 0 || c.DefaultWorkspace != "" || c.Platform != "" {
+				return errors.New("invalid retirement record")
+			}
+			break
+		}
 		if c.AssignmentID == "" || len(c.Assignments) != 0 || c.DefaultWorkspace != "" || c.Platform != "" {
 			return errors.New("missing assignment identity")
 		}

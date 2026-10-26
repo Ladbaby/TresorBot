@@ -348,7 +348,22 @@ func (s *Store) RecordEvent(r Report) error {
 	if r.Sequence != last+1 {
 		return ErrConflict
 	}
-	if r.Kind == "terminal" {
+	if r.Kind == "execution_uncertain" {
+		var uncertainty struct {
+			Reason string `json:"reason"`
+		}
+		if json.Unmarshal(payload, &uncertainty) != nil || uncertainty.Reason != "executor_failed_after_start" || !bytes.Equal(payload, []byte(`{"reason":"executor_failed_after_start"}`)) {
+			return ErrInvalid
+		}
+		if t.State != "running" && t.State != "waiting_child" && t.State != "cancelling" && t.State != "needs_attention" {
+			return ErrInvalid
+		}
+		if t.State != "needs_attention" {
+			if _, err = tx.Exec(`UPDATE tasks SET state='needs_attention' WHERE id=?`, t.ID); err != nil {
+				return err
+			}
+		}
+	} else if r.Kind == "terminal" {
 		var children int
 		if err = tx.QueryRow(`SELECT COUNT(*) FROM tasks WHERE parent_id=? AND state NOT IN('completed','failed','cancelled')`, t.ID).Scan(&children); err != nil {
 			return err
