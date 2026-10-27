@@ -19,6 +19,9 @@ type Task struct {
 	CancelRequested         bool
 	ParentID, RootID        string
 	QueueOrder              int64
+	// TargetRunnerID optionally pins where the task runs (SendToEarth). Empty
+	// means the bot's configured default runner decides, as before.
+	TargetRunnerID string
 }
 type Assignment struct {
 	ID, TaskID, RunnerID, ExecutionID string
@@ -104,7 +107,7 @@ type querier interface{ QueryRow(string, ...any) *sql.Row }
 
 func getTask(q querier, id string) (Task, error) {
 	var t Task
-	err := q.QueryRow(`SELECT id,bot_id,state,input,snapshot,result,COALESCE(current_assignment,''),epoch,cancel_requested FROM tasks WHERE id=?`, id).Scan(&t.ID, &t.BotID, &t.State, &t.Input, &t.Snapshot, &t.Result, &t.AssignmentID, &t.Epoch, &t.CancelRequested)
+	err := q.QueryRow(`SELECT id,bot_id,state,input,snapshot,result,COALESCE(current_assignment,''),epoch,cancel_requested,COALESCE(target_runner_id,'') FROM tasks WHERE id=?`, id).Scan(&t.ID, &t.BotID, &t.State, &t.Input, &t.Snapshot, &t.Result, &t.AssignmentID, &t.Epoch, &t.CancelRequested, &t.TargetRunnerID)
 	if err == sql.ErrNoRows {
 		err = ErrNotFound
 	}
@@ -183,9 +186,17 @@ func claimTask(tx *sql.Tx, id, runner string) (Assignment, error) {
 	if err = json.Unmarshal(t.Snapshot, &admitted); err != nil {
 		return Assignment{}, ErrInvalid
 	}
-	configured := admitted.RunnerID
-	if configured != "" && configured != runner {
-		return Assignment{}, ErrConflict
+	// A per-task target runner (SendToEarth) overrides the bot's default; a
+	// pinned target must be honored exactly, never silently rerouted.
+	if t.TargetRunnerID != "" {
+		if t.TargetRunnerID != runner {
+			return Assignment{}, ErrConflict
+		}
+	} else {
+		configured := admitted.RunnerID
+		if configured != "" && configured != runner {
+			return Assignment{}, ErrConflict
+		}
 	}
 	var active int
 	if err = tx.QueryRow(`SELECT COUNT(*) FROM tasks WHERE bot_id=? AND state IN('dispatching','running','waiting_child','cancelling','needs_attention')`, t.BotID).Scan(&active); err != nil {

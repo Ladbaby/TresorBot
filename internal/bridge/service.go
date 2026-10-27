@@ -46,6 +46,11 @@ type Options struct {
 	Store            *store.Store
 	// Managed validates registered authority and returns the managed-tools decision.
 	Managed      func(Input, store.Bot) (any, error)
+	// ChatDecision builds the managed-tools decision for a direct client chat:
+	// the resolved downstream answers with the bot's memory + tools attached,
+	// without substituting an Earth Pi session. It receives the request binding
+	// so tool calls can be scoped to this chat's execution.
+	ChatDecision func(bot store.Bot, bindingID string) (any, error)
 	Invoke       func(http.ResponseWriter, *http.Request, Input, store.Bot)
 	ValidateChat func(json.RawMessage, string) error
 	Tools        func(http.ResponseWriter, *http.Request, json.RawMessage)
@@ -202,12 +207,21 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if r.URL.Path == "/integration/prepare" {
-		output(w, 200, map[string]any{"decision": map[string]any{"kind": "intercept", "service": "local", "operation": "invoke", "payload": input}})
+		// Direct chat: the resolved downstream answers, with the bot's memory and
+		// tools attached. No Earth Pi session substitutes the request.
+		if s.o.ChatDecision == nil {
+			fail(w, 503, "integration_unavailable")
+			return
+		}
+		decision, derr := s.o.ChatDecision(*bot, input.BindingID)
+		if derr != nil {
+			fail(w, 503, "integration_unavailable")
+			return
+		}
+		output(w, 200, map[string]any{"decision": decision})
 		return
 	}
-	if s.o.Invoke == nil {
-		fail(w, 503, "invocation_unavailable")
-		return
-	}
-	s.o.Invoke(w, r, input, *bot)
+	// The historical whole-request substitution path is retired: a direct chat
+	// is never replaced by a bot task's output here.
+	fail(w, 409, "chat_intercept_retired")
 }

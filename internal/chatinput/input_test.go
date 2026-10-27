@@ -73,6 +73,40 @@ func TestParseAcceptsStandardStreamUsagePreference(t *testing.T) {
 	}
 }
 
+func TestParseAcceptsBenignEchoFields(t *testing.T) {
+	// Multi-turn clients replay assistant reasoning/name fields in history. The
+	// gate accepts the benign text-only fields but drops them; only role+content
+	// are retained and rendered.
+	raw := json.RawMessage(`{"model":"a","messages":[
+		{"role":"user","content":"hi"},
+		{"role":"assistant","content":"hello","reasoning_content":"thinking...","reasoning":"more","name":"bot"},
+		{"role":"assistant","content":"again","reasoning_content":null,"reasoning":null,"name":null},
+		{"role":"user","content":"next"}
+	]}`)
+	in, err := Parse(raw, "a")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(in.Messages) != 4 {
+		t.Fatalf("messages=%d", len(in.Messages))
+	}
+	for _, m := range in.Messages {
+		if m.Role == "" || m.Content == "" && m.Role != "assistant" {
+			t.Fatalf("unexpected message %+v", m)
+		}
+	}
+	// The extras must not leak into the rendered prompt.
+	prompt := in.Prompt()
+	for _, bad := range []string{"thinking...", "reasoning", "name", "bot"} {
+		if strings.Contains(prompt, bad) {
+			t.Fatalf("prompt leaked %q: %q", bad, prompt)
+		}
+	}
+	if !strings.Contains(prompt, "<|assistant|>\nhello") {
+		t.Fatalf("prompt missing assistant content: %q", prompt)
+	}
+}
+
 func TestParseRejectsUnsupportedSemantics(t *testing.T) {
 	cases := []struct{ name, body string }{
 		{"null stream", `{"model":"a","stream":null,"messages":[{"role":"user","content":"x"}]}`},
@@ -81,6 +115,9 @@ func TestParseRejectsUnsupportedSemantics(t *testing.T) {
 		{"wrong model", `{"model":"other","messages":[{"role":"user","content":"x"}]}`},
 		{"tools", `{"model":"a","tools":[],"messages":[{"role":"user","content":"x"}]}`},
 		{"unknown message field", `{"model":"a","messages":[{"role":"assistant","tool_calls":[],"content":"x"}]}`},
+		{"unknown field foo", `{"model":"a","messages":[{"role":"assistant","foo":"bar","content":"x"}]}`},
+		{"structured reasoning_content", `{"model":"a","messages":[{"role":"assistant","reasoning_content":[{"type":"text"}],"content":"x"}]}`},
+		{"reasoning_details", `{"model":"a","messages":[{"role":"assistant","reasoning_details":[],"content":"x"}]}`},
 		{"image content", `{"model":"a","messages":[{"role":"user","content":[{"type":"image_url"}]}]}`},
 		{"unsupported role", `{"model":"a","messages":[{"role":"tool","content":"x"}]}`},
 		{"bad stream", `{"model":"a","stream":"yes","messages":[{"role":"user","content":"x"}]}`},

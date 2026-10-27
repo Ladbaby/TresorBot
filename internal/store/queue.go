@@ -187,13 +187,21 @@ func (s *Store) ClaimNext(botID, runnerID string) (Assignment, error) {
 }
 
 // AdmitChild records child identity before any dispatch and checks the complete wait graph.
+// ChildAdmissionFence authorizes the parent scope, and TargetRunner optionally
+// pins where the child runs (SendToEarth). The child may never be the sender.
 type ChildAdmissionFence struct {
 	RunnerID                  string
 	AssignmentID, ExecutionID string
 	Epoch                     int64
 }
 
-func (s *Store) AdmitChild(parentID, targetID, operationID string, input []byte, fences ...ChildAdmissionFence) (Task, error) {
+// ChildOptions carries the per-invocation runner target without changing the
+// replay hash of the delegated input.
+type ChildOptions struct {
+	TargetRunnerID string
+}
+
+func (s *Store) AdmitChild(parentID, targetID, operationID string, input []byte, opts ChildOptions, fences ...ChildAdmissionFence) (Task, error) {
 	canonical, e := canonicalJSON(input)
 	if e != nil || operationID == "" || len(operationID) > 256 {
 		return Task{}, ErrInvalid
@@ -268,8 +276,22 @@ func (s *Store) AdmitChild(parentID, targetID, operationID string, input []byte,
 	if !b.Enabled {
 		return Task{}, ErrDisabled
 	}
-	child := Task{ID: uuid.NewString(), BotID: targetID, State: "queued", Input: canonical, Snapshot: snapshot(b), ParentID: parent.ID, RootID: parent.RootID}
-	if _, e = tx.Exec(`INSERT INTO tasks(id,bot_id,input,snapshot,state,parent_id,root_id) VALUES(?,?,?,?,?,?,?)`, child.ID, child.BotID, child.Input, child.Snapshot, child.State, child.ParentID, child.RootID); e != nil {
+	if parent.BotID == targetID {
+		// A bot can never delegate to itself; reject even a forged self-target.
+		return Task{}, ErrInvalid
+	}
+	if opts.TargetRunnerID != "" {
+		// The chosen Earth must exist and be usable, or the delegation is refused.
+		var usable bool
+		if e = tx.QueryRow(`SELECT COUNT(*) FROM runners WHERE id=? AND revoked=0`, opts.TargetRunnerID).Scan(&usable); e != nil {
+			return Task{}, e
+		}
+		if !usable {
+			return Task{}, ErrNotFound
+		}
+	}
+	child := Task{ID: uuid.NewString(), BotID: targetID, State: "queued", Input: canonical, Snapshot: snapshot(b), ParentID: parent.ID, RootID: parent.RootID, TargetRunnerID: opts.TargetRunnerID}
+	if _, e = tx.Exec(`INSERT INTO tasks(id,bot_id,input,snapshot,state,parent_id,root_id,target_runner_id) VALUES(?,?,?,?,?,?,?,NULLIF(?,''))`, child.ID, child.BotID, child.Input, child.Snapshot, child.State, child.ParentID, child.RootID, child.TargetRunnerID); e != nil {
 		return Task{}, e
 	}
 	if _, e = tx.Exec(`INSERT INTO task_dependencies VALUES(?,?,?,?)`, parent.ID, child.ID, operationID, hash); e != nil {

@@ -239,7 +239,10 @@ func validOperationID(id string) bool {
 }
 
 func (r ManagedToolRequest) Validate() error {
-	if !ValidID(r.Execution.ExecutionID) || r.Execution.Service == "" || r.Execution.Subject == "" || r.Execution.AliasID == "" || !ValidID(r.Execution.AssignmentID) || r.Execution.Epoch <= 0 || r.Execution.InferenceID == "" || !validOperationID(r.OperationID) || r.Tool == "" || len(r.Arguments) == 0 || !json.Valid(r.Arguments) {
+	// The execution carries identity and a continuation key only; there is no
+	// capability to verify. The alias identifies the bot and the tool call is
+	// otherwise fully specified by its name, arguments and operation id.
+	if r.Execution.AliasID == "" || r.Execution.ExecutionID == "" || !validOperationID(r.OperationID) || r.Tool == "" || len(r.Arguments) == 0 || !json.Valid(r.Arguments) {
 		return errors.New("invalid managed tool request")
 	}
 	return nil

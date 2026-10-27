@@ -19,6 +19,9 @@ type Bot struct {
 	SharedWrite  bool   `json:"shared_write"`
 	Enabled      bool   `json:"enabled"`
 	Revision     int64  `json:"revision"`
+	// Kind distinguishes ordinary brains from the built-in Worker: a Worker has
+	// no memory and cannot delegate, so its tool surface is reduced accordingly.
+	Kind string `json:"kind"`
 }
 type BotPatch struct {
 	Alias, Name, Instructions, RunnerID, Workspace, Adapter *string
@@ -29,11 +32,17 @@ type Contact struct {
 	Description string `json:"description"`
 }
 
+// Worker marks the built-in stateless recipient kind: no memory, no delegation.
+const Worker = "worker"
+
+func (b Bot) IsWorker() bool { return b.Kind == Worker }
+
 func validBot(b Bot) bool {
 	return len(b.Alias) <= 256 && len(b.Name) <= 256 &&
 		len(b.Instructions) <= 65536 && len(b.Workspace) <= 4096 &&
 		strings.TrimSpace(b.Alias) == b.Alias && b.Alias != "" &&
-		!strings.ContainsAny(b.Alias, "\r\n\t ") && strings.TrimSpace(b.Name) != "" && b.Adapter == "pi"
+		!strings.ContainsAny(b.Alias, "\r\n\t ") && strings.TrimSpace(b.Name) != "" && b.Adapter == "pi" &&
+		(b.Kind == "" || b.Kind == Worker)
 }
 func (s *Store) CreateRunner(name string) (string, error) {
 	if strings.TrimSpace(name) == "" {
@@ -80,11 +89,11 @@ func (s *Store) CreateBot(b Bot) (Bot, error) {
 
 type scanner interface{ Scan(...any) error }
 
-const botColumns = `id,alias,name,instructions,COALESCE(runner_id,''),workspace,adapter,shared_write,enabled,revision`
+const botColumns = `id,alias,name,instructions,COALESCE(runner_id,''),workspace,adapter,shared_write,enabled,revision,COALESCE(kind,'')`
 
 func scanBot(row scanner) (Bot, error) {
 	var b Bot
-	err := row.Scan(&b.ID, &b.Alias, &b.Name, &b.Instructions, &b.RunnerID, &b.Workspace, &b.Adapter, &b.SharedWrite, &b.Enabled, &b.Revision)
+	err := row.Scan(&b.ID, &b.Alias, &b.Name, &b.Instructions, &b.RunnerID, &b.Workspace, &b.Adapter, &b.SharedWrite, &b.Enabled, &b.Revision, &b.Kind)
 	if err == sql.ErrNoRows {
 		err = ErrNotFound
 	}
@@ -92,6 +101,12 @@ func scanBot(row scanner) (Bot, error) {
 }
 func (s *Store) GetBot(id string) (Bot, error) {
 	return scanBot(s.db.QueryRow(`SELECT `+botColumns+` FROM bots WHERE id=? AND deleted=0`, id))
+}
+
+// BotByAlias resolves a bot from its alias (the model name a client requests).
+// This is how a tool call, which only carries the alias, maps back to a bot.
+func (s *Store) BotByAlias(alias string) (Bot, error) {
+	return scanBot(s.db.QueryRow(`SELECT `+botColumns+` FROM bots WHERE alias=? AND deleted=0`, alias))
 }
 func (s *Store) ListBots() ([]Bot, error) {
 	rows, err := s.db.Query(`SELECT ` + botColumns + ` FROM bots WHERE deleted=0 ORDER BY alias`)

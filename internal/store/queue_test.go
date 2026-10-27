@@ -57,14 +57,14 @@ func TestDelegationRejectsCrossRootWaitCycle(t *testing.T) {
 	must(t, e)
 	must(t, s.Accept(pa))
 	must(t, s.Accept(qa))
-	child, e := s.AdmitChild(p.ID, b.ID, "operation", []byte(`{"text":"child"}`))
+	child, e := s.AdmitChild(p.ID, b.ID, "operation", []byte(`{"text":"child"}`), ChildOptions{})
 	must(t, e)
-	again, e := s.AdmitChild(p.ID, b.ID, "operation", []byte(`{"text":"child"}`))
+	again, e := s.AdmitChild(p.ID, b.ID, "operation", []byte(`{"text":"child"}`), ChildOptions{})
 	must(t, e)
 	if child.ID != again.ID {
 		t.Fatal("duplicate child")
 	}
-	if _, e = s.AdmitChild(q.ID, a.ID, "cycle", []byte(`{}`)); !errors.Is(e, ErrConflict) {
+	if _, e = s.AdmitChild(q.ID, a.ID, "cycle", []byte(`{}`), ChildOptions{}); !errors.Is(e, ErrConflict) {
 		t.Fatal("cross-root cycle accepted", e)
 	}
 	must(t, s.CancelTask(p.ID))

@@ -126,6 +126,10 @@ func (h *Handler) Execute(ctx context.Context, scope Scope, r Request) (any, int
 	if err != nil || !bot.Enabled {
 		return h.complete(r.OperationID, domain("bot_disabled"), 403)
 	}
+	// A Worker has no memory; reject every memory tool for its scope.
+	if bot.IsWorker() {
+		return h.complete(r.OperationID, domain("memory_denied"), 403)
+	}
 	scopeName := args.Scope
 	if scopeName == "private" {
 		scopeName = scope.BotID

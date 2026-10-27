@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"tresorbot/internal/api"
+	"tresorbot/internal/bottools"
 	"tresorbot/internal/config"
 	"tresorbot/internal/memory"
 	"tresorbot/internal/ownerauth"
@@ -20,6 +21,7 @@ type Application struct {
 	Handler   http.Handler
 	store     *store.Store
 	memory    *memory.Store
+	bottools  *bottools.Handler
 	sessions  *ownerauth.Store
 	hub       *runnertransport.Hub
 	dispatch  *dispatchLoop
@@ -70,7 +72,7 @@ func Open(c config.Config) (*Application, error) {
 		s.Close()
 		return nil, fmt.Errorf("open owner sessions: %w", err)
 	}
-	app := &Application{store: s, memory: m, sessions: sessions}
+	app := &Application{store: s, memory: m, sessions: sessions, bottools: bottools.New(s, m)}
 	registry, service, err := app.integration(c)
 	if err != nil {
 		sessions.Close()

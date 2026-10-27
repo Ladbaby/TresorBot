@@ -101,18 +101,49 @@ func Parse(raw json.RawMessage, requestedAlias string) (Input, error) {
 	}
 	total := 0
 	for i, rawMessage := range messages {
-		var m struct {
-			Role    string          `json:"role"`
-			Content json.RawMessage `json:"content"`
-		}
+		var fields map[string]json.RawMessage
 		md := json.NewDecoder(bytes.NewReader(rawMessage))
-		md.DisallowUnknownFields()
-		if err := md.Decode(&m); err != nil {
+		if err := md.Decode(&fields); err != nil {
 			return Input{}, fmt.Errorf("%w: message %d: %v", ErrInvalidInput, i, err)
 		}
 		if err := ensureEOF(md); err != nil {
 			return Input{}, err
 		}
+		// Accept only a minimal allow-list of benign, human-readable echo-back
+		// fields that multi-turn clients replay in history. Everything else stays
+		// strict so tool-call, tool-role, image, and opaque provider state can
+		// never enter the text-only bot path. The extras are validated then
+		// dropped; only role and content are retained.
+		var roleRaw, contentRaw json.RawMessage
+		for k, v := range fields {
+			switch k {
+			case "role":
+				roleRaw = v
+			case "content":
+				contentRaw = v
+			case "reasoning", "reasoning_content", "name":
+				if bytes.Equal(bytes.TrimSpace(v), []byte("null")) {
+					continue
+				}
+				var s string
+				if json.Unmarshal(v, &s) != nil {
+					return Input{}, fmt.Errorf("%w: message %d: %s must be plain text", ErrInvalidInput, i, k)
+				}
+			default:
+				return Input{}, fmt.Errorf("%w: message %d: unknown field %q", ErrInvalidInput, i, k)
+			}
+		}
+		var m struct {
+			Role    string          `json:"role"`
+			Content json.RawMessage `json:"content"`
+		}
+		if len(roleRaw) == 0 {
+			return Input{}, fmt.Errorf("%w: message %d: role required", ErrInvalidInput, i)
+		}
+		if err := json.Unmarshal(roleRaw, &m.Role); err != nil {
+			return Input{}, fmt.Errorf("%w: message %d: %v", ErrInvalidInput, i, err)
+		}
+		m.Content = contentRaw
 		if m.Role != "system" && m.Role != "developer" && m.Role != "user" && m.Role != "assistant" {
 			return Input{}, fmt.Errorf("%w: unsupported role %q", ErrInvalidInput, m.Role)
 		}

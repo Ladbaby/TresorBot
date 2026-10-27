@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"tresorbot/internal/bottools"
 	"tresorbot/internal/bridge"
 	"tresorbot/internal/chatinput"
@@ -14,6 +15,23 @@ import (
 	"tresorbot/internal/runnertransport"
 	"tresorbot/internal/store"
 )
+
+// botDecision builds the managed-tools decision for a bot: its memory index and
+// guidance plus the TresorBot tool surface. The downstream model answers; the
+// tools give it access to the bot's memory and contacts. Used for both direct
+// chat and a Pi-driven task, so the downstream model sees the same brain.
+func (a *Application) botDecision(bot store.Bot) (any, error) {
+	delegation, err := a.bottools.DelegationDefinitions(bot.ID)
+	if err != nil {
+		return nil, err
+	}
+	definitions := append(bottools.Definitions(), delegation...)
+	instructions := "You are the bot " + bot.Name + ". Use TresorBotMemoryList, TresorBotMemoryRead and TresorBotMemoryWrite for durable memory. Private memory belongs to this bot; shared writes require permission. Use TresorBotContactsList to discover permitted recipients and TresorBotSendMessage for explicitly requested communication; it runs the recipient on an Earth and waits for its reply. Include only the context you intend to share. Read revisions before modifying existing Markdown."
+	if index, err := a.memory.Index(bot.ID, bot.ID); err == nil && strings.TrimSpace(index) != "" {
+		instructions += "\n\n" + index
+	}
+	return map[string]any{"kind": "managedTools", "service": "local", "codec": "openai-chat.v1", "instructions": instructions, "tools": definitions}, nil
+}
 
 func (a *Application) integration(c config.Config) (*gateway.Registry, *bridge.Service, error) {
 	if c.IntegrationToken == "" {
@@ -36,17 +54,14 @@ func (a *Application) integration(c config.Config) (*gateway.Registry, *bridge.S
 		ValidateChat: func(raw json.RawMessage, alias string) error { _, e := chatinput.Parse(raw, alias); return e },
 		Invoke:       bridge.ChatInvoker(a.store, func() { a.dispatch.Wake() }, parse),
 		Managed: func(input bridge.Input, bot store.Bot) (any, error) {
-			ex := input.Execution
-			_, e := a.store.ValidateGatewayExecution(ex.ID, ex.Assignment, ex.Subject, bot.Alias, input.BindingID, ex.Epoch)
-			if e != nil || ex.Subject != bot.ID {
-				return nil, store.ErrConflict
-			}
-			delegation, e := tools.DelegationDefinitions(bot.ID)
-			if e != nil {
-				return nil, e
-			}
-			definitions := append(bottools.Definitions(), delegation...)
-			return map[string]any{"kind": "managedTools", "service": "local", "codec": "openai-chat.v1", "instructions": "Use TresorBotMemoryList, TresorBotMemoryRead and TresorBotMemoryWrite for durable memory. Private memory belongs to this bot; shared writes require permission. Use TresorBotContactsList to discover permitted recipients and TresorBotSendMessage for explicitly requested communication. It currently waits for the recipient's reply. Include only the context you intend to share. Pi owns all other available tools. Read revisions before modifying existing Markdown.", "tools": definitions}, nil
+			// No execution authority to verify: the bot is identified by the
+			// requested alias resolved in the bridge. Supply its tools and memory.
+			return a.botDecision(bot)
+		},
+		ChatDecision: func(bot store.Bot, bindingID string) (any, error) {
+			// Direct chat: the resolved downstream model answers with the bot's
+			// memory and tools attached. No Earth Pi session substitutes it.
+			return a.botDecision(bot)
 		},
 		Tools: func(w http.ResponseWriter, r *http.Request, raw json.RawMessage) {
 			reply := func(status int, payload any) {
@@ -65,12 +80,24 @@ func (a *Application) integration(c config.Config) (*gateway.Registry, *bridge.S
 				return
 			}
 			ex := request.Execution
-			if _, e := a.store.ValidateGatewayExecution(ex.ExecutionID, ex.AssignmentID, ex.Subject, ex.AliasID, ex.Service, ex.Epoch); e != nil {
-				failure(403, "execution_unauthorized")
+			// No execution authority to verify. Identify the bot from the alias the
+			// gateway routed on, so tool effects land in the right bot's memory.
+			bot, e := a.store.BotByAlias(ex.AliasID)
+			if e != nil {
+				failure(403, "bot_not_found")
 				return
 			}
-			scope := bottools.Scope{ExecutionID: ex.ExecutionID, AssignmentID: ex.AssignmentID, BotID: ex.Subject, Alias: ex.AliasID, Service: ex.Service, Epoch: ex.Epoch}
+			scope := bottools.Scope{ExecutionID: ex.ExecutionID, AssignmentID: ex.AssignmentID, BotID: bot.ID, Alias: ex.AliasID, Service: ex.Service, Epoch: ex.Epoch}
 			toolRequest := bottools.Request{OperationID: request.OperationID, Tool: request.Tool, Arguments: request.Arguments, Reconcile: request.Reconcile}
+			if request.Tool == "TresorBotEarthList" {
+				payload, status, e := tools.ListEarthTool(r.Context(), toolRequest)
+				if e != nil {
+					failure(503, "tools_unavailable")
+					return
+				}
+				reply(status, payload)
+				return
+			}
 			if request.Tool == "TresorBotContactsList" {
 				payload, status, e := tools.ListContactsTool(r.Context(), scope, toolRequest)
 				if e != nil {

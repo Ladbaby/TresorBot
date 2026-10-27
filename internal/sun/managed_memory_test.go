@@ -87,9 +87,14 @@ func TestScopedIntegrationRegistersAndExecutesMemoryThroughSun(t *testing.T) {
 	if e != nil || doc.Content != "remembered" {
 		t.Fatal(doc, e)
 	}
+	// Epoch is only a continuation key now, not an authority. A changed epoch does
+	// not block the tool: identity comes from the bot alias, so the call is
+	// accepted and reaches the memory domain (here a revision conflict).
 	execution["Epoch"] = assignment.Epoch + 1
+	payload["operation_id"] = strings.Repeat("c", 64)
+	payload["arguments"] = map[string]string{"scope": "private", "path": "other.md", "expected_revision": "", "content": "second"}
 	w = call("/integration/tools/execute", payload)
-	if w.Code != 403 {
-		t.Fatal("stale scope accepted", w.Code, w.Body.String())
+	if w.Code == 401 || w.Code == 403 {
+		t.Fatal("identity-scoped tool authority-rejected", w.Code, w.Body.String())
 	}
 }

@@ -58,10 +58,16 @@ func testDelegationReattaches(t *testing.T, native bool) {
 	if !strings.Contains(string(b), specialist.ID) || strings.Contains(string(b), "PRIVATE") {
 		t.Fatal(string(b))
 	}
-	if defs[1]["name"] != "TresorBotSendMessage" {
-		t.Fatal("unexpected messaging tool name", defs[1]["name"])
+	var sendDef map[string]any
+	for _, def := range defs {
+		if def["name"] == "TresorBotSendMessage" {
+			sendDef = def
+		}
 	}
-	description, ok := defs[1]["description"].(string)
+	if sendDef == nil {
+		t.Fatal("missing TresorBotSendMessage tool")
+	}
+	description, ok := sendDef["description"].(string)
 	if !ok || !strings.Contains(description, "TresorBotContactsList") || strings.Contains(description, specialist.ID) || strings.Contains(description, "Research") {
 		t.Fatal("delegate description must direct discovery without embedding Contacts", description)
 	}

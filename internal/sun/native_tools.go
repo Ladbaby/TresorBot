@@ -90,6 +90,15 @@ func (a *Application) nativeTools() http.Handler {
 			reply(200, payload)
 			return
 		}
+		if request.Tool == "TresorBotEarthList" {
+			payload, status, err := tools.ListEarthTool(r.Context(), call)
+			if err != nil {
+				fail(503, "tools_unavailable")
+				return
+			}
+			reply(status, payload)
+			return
+		}
 		var payload any
 		var status int
 		if request.Tool == "TresorBotContactsList" {
