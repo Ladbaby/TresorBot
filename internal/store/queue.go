@@ -188,6 +188,7 @@ func (s *Store) ClaimNext(botID, runnerID string) (Assignment, error) {
 
 // AdmitChild records child identity before any dispatch and checks the complete wait graph.
 type ChildAdmissionFence struct {
+	RunnerID                  string
 	AssignmentID, ExecutionID string
 	Epoch                     int64
 }
@@ -215,7 +216,12 @@ func (s *Store) AdmitChild(parentID, targetID, operationID string, input []byte,
 			return Task{}, ErrConflict
 		}
 		var active int
-		if err = tx.QueryRow(`SELECT COUNT(*) FROM gateway_executions g JOIN bots b ON b.id=g.bot_id WHERE g.execution_id=? AND g.assignment_id=? AND g.task_id=? AND g.epoch=? AND g.state='active' AND b.enabled=1 AND b.deleted=0`, f.ExecutionID, f.AssignmentID, parentID, f.Epoch).Scan(&active); err != nil {
+		if f.RunnerID != "" {
+			err = tx.QueryRow(`SELECT COUNT(*) FROM assignments a JOIN runners r ON r.id=a.runner_id JOIN bots b ON b.id=? WHERE a.id=? AND a.runner_id=? AND a.epoch=? AND r.revoked=0 AND b.enabled=1 AND b.deleted=0`, parent.BotID, f.AssignmentID, f.RunnerID, f.Epoch).Scan(&active)
+		} else {
+			err = tx.QueryRow(`SELECT COUNT(*) FROM gateway_executions g JOIN bots b ON b.id=g.bot_id WHERE g.execution_id=? AND g.assignment_id=? AND g.task_id=? AND g.epoch=? AND g.state='active' AND b.enabled=1 AND b.deleted=0`, f.ExecutionID, f.AssignmentID, parentID, f.Epoch).Scan(&active)
+		}
+		if err != nil {
 			return Task{}, err
 		}
 		if active != 1 {

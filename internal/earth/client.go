@@ -435,7 +435,7 @@ func (c *Client) launch(ctx context.Context, a contracts.Assign) error {
 			terminal.State = contracts.Failed
 			terminal.Error = &contracts.Error{Code: "execution_unavailable", Message: "Execution could not complete; inspect Earth configuration and authorization"}
 		} else {
-			terminal.Result, _ = json.Marshal(map[string]string{"text": result.Text})
+			terminal.Result, _ = json.Marshal(map[string]any{"text": result.Text, "usage": result.Usage, "model": result.Model, "provider": result.Provider})
 		}
 		if _, err := c.o.Journal.Append(a.AssignmentID, a.RunnerID, a.Epoch, terminal); err != nil {
 			return

@@ -18,7 +18,7 @@ func TestFinalChatJSONAndSSEHideTaskInternals(t *testing.T) {
 				t.Fatal(e)
 			}
 			defer st.Close()
-			bot, e := st.CreateBot(store.Bot{Alias: "bot/personal", Name: "Personal", Enabled: true,Workspace:t.TempDir()})
+			bot, e := st.CreateBot(store.Bot{Alias: "bot/personal", Name: "Personal", Enabled: true, Workspace: t.TempDir()})
 			if e != nil {
 				t.Fatal(e)
 			}
@@ -38,21 +38,30 @@ func TestFinalChatJSONAndSSEHideTaskInternals(t *testing.T) {
 			if e = st.Accept(a); e != nil {
 				t.Fatal(e)
 			}
-			if e = st.RecordEvent(store.Report{AssignmentID: a.ID, RunnerID: runner, Epoch: a.Epoch, EventID: uuid.NewString(), Sequence: 1, Kind: "terminal", Payload: json.RawMessage(`{"state":"completed","result":{"text":"Final answer"}}`)}); e != nil {
+			if e = st.RecordEvent(store.Report{AssignmentID: a.ID, RunnerID: runner, Epoch: a.Epoch, EventID: uuid.NewString(), Sequence: 1, Kind: "terminal", Payload: json.RawMessage(`{"state":"completed","result":{"text":"Final answer","usage":{"input":10,"output":7,"cacheRead":80,"cacheWrite":5}}}`)}); e != nil {
 				t.Fatal(e)
 			}
 			invoke := ChatInvoker(st, nil, func(json.RawMessage, string) (json.RawMessage, bool, error) { return body, stream, nil })
 			var input Input
 			input.BindingID = "binding"
 			input.Body = body
+			if stream {
+				input.Body = json.RawMessage(`{"stream":true,"stream_options":{"include_usage":true}}`)
+			}
 			input.Request = json.RawMessage(`{"headers":{"idempotency-key":["request"]}}`)
 			w := httptest.NewRecorder()
 			invoke(w, httptest.NewRequest("POST", "/integration/invoke", bytes.NewReader(nil)), input, bot)
 			if w.Code != 200 || !strings.Contains(w.Body.String(), "Final answer") || strings.Contains(w.Body.String(), "binding_id") || strings.Contains(w.Body.String(), "tool_calls") {
 				t.Fatal(w.Code, w.Body.String())
 			}
+			if !strings.Contains(w.Body.String(), `"prompt_tokens":95`) || !strings.Contains(w.Body.String(), `"usage_scope":"task"`) {
+				t.Fatal("task usage absent", w.Body.String())
+			}
 			if stream && strings.Count(w.Body.String(), `"finish_reason":"stop"`) != 1 {
 				t.Fatal("wrong successful finish count", w.Body.String())
+			}
+			if stream && !strings.Contains(w.Body.String(), `"choices":[],`) {
+				t.Fatal("missing final usage-only chunk", w.Body.String())
 			}
 			if stream && !strings.Contains(w.Body.String(), "data: [DONE]") {
 				t.Fatal(w.Body.String())

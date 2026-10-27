@@ -39,16 +39,29 @@ func Parse(raw json.RawMessage, requestedAlias string) (Input, error) {
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
 	var wire struct {
-		Model         json.RawMessage `json:"model"`
-		Messages      json.RawMessage `json:"messages"`
-		Stream        json.RawMessage `json:"stream"`
-		StreamOptions json.RawMessage `json:"stream_options"`
+		Model               json.RawMessage `json:"model"`
+		Messages            json.RawMessage `json:"messages"`
+		Stream              json.RawMessage `json:"stream"`
+		StreamOptions       json.RawMessage `json:"stream_options"`
+		MaxTokens           json.RawMessage `json:"max_tokens"`
+		MaxCompletionTokens json.RawMessage `json:"max_completion_tokens"`
 	}
 	if err := dec.Decode(&wire); err != nil {
 		return in, fmt.Errorf("%w: %v", ErrInvalidInput, err)
 	}
 	if err := ensureEOF(dec); err != nil {
 		return in, err
+	}
+	// Client completion limits do not limit a multi-generation agent task or
+	// override the local Pi model configuration. Validate compatibility hints.
+	for _, limit := range []json.RawMessage{wire.MaxTokens, wire.MaxCompletionTokens} {
+		if len(limit) == 0 || bytes.Equal(bytes.TrimSpace(limit), []byte("null")) {
+			continue
+		}
+		var n int64
+		if json.Unmarshal(limit, &n) != nil || n <= 0 {
+			return Input{}, fmt.Errorf("%w: completion limit must be a positive integer", ErrInvalidInput)
+		}
 	}
 	if len(wire.Model) == 0 || len(wire.Messages) == 0 {
 		return in, fmt.Errorf("%w: model and messages are required", ErrInvalidInput)
@@ -64,8 +77,8 @@ func Parse(raw json.RawMessage, requestedAlias string) (Input, error) {
 			return Input{}, fmt.Errorf("%w: stream must be boolean", ErrInvalidInput)
 		}
 	}
-	// Usage is not available for the composed bot execution. Accept this standard
-	// client preference without fabricating usage or passing it into Pi.
+	// Validate the standard client usage preference here; the bridge emits
+	// task totals from observed Pi generations rather than forwarding it to Pi.
 	if len(wire.StreamOptions) != 0 && !bytes.Equal(bytes.TrimSpace(wire.StreamOptions), []byte("null")) {
 		var options struct {
 			IncludeUsage json.RawMessage `json:"include_usage"`

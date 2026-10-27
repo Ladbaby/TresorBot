@@ -13,12 +13,14 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+
 	"sync"
+	"tresorbot/internal/chatinput"
 
 	"github.com/google/uuid"
 )
 
-const SupportedVersion = "1.0.2"
+const SupportedVersion = "1.4.0"
 const maxRecordBytes = 8 << 20
 
 type Config struct {
@@ -30,12 +32,35 @@ type Config struct {
 }
 type Request struct {
 	AssignmentID, Workspace, StateDir, Model, RelayURL, RelayKey, Instructions, Text string
+	ConversationID                                                                   string
+	Messages                                                                         []chatinput.Message
+	ToolURL, ToolToken                                                               string
 }
 type Progress struct{ Type, Text, Tool string }
+type Usage struct {
+	Partial    bool                  `json:"partial,omitempty"`
+	Input      int64                 `json:"input"`
+	Output     int64                 `json:"output"`
+	CacheRead  int64                 `json:"cacheRead"`
+	CacheWrite int64                 `json:"cacheWrite"`
+	Total      int64                 `json:"total"`
+	Models     map[string]ModelUsage `json:"models"`
+}
+type ModelUsage struct {
+	Provider   string `json:"provider"`
+	Model      string `json:"model"`
+	Input      int64  `json:"input"`
+	Output     int64  `json:"output"`
+	CacheRead  int64  `json:"cacheRead"`
+	CacheWrite int64  `json:"cacheWrite"`
+	Total      int64  `json:"total"`
+}
 type Result struct {
 	Text, StateDir, SessionID, SessionFile, StopReason, Error string
 	Completed, Cancelled, ProcessExited                       bool
 	Evidence                                                  []string
+	Usage                                                     *Usage
+	Model, Provider                                           string
 }
 type Adapter struct {
 	Config Config
@@ -77,7 +102,7 @@ func (a *Adapter) Run(ctx context.Context, req Request, onProgress func(Progress
 		return result, err
 	}
 	ver := exec.CommandContext(ctx, node, cli, "--version")
-	ver.Env = envSlice(safeEnvironment(filepath.Join(state, "agent"), filepath.Join(state, "sessions")))
+	ver.Env = os.Environ()
 	var versionOutput strings.Builder
 	ver.Stdout = &limitedWriter{w: &versionOutput, max: 1024}
 	ver.Stderr = io.Discard
@@ -102,30 +127,25 @@ func (a *Adapter) Run(ctx context.Context, req Request, onProgress func(Progress
 		})
 	}
 	if err = os.MkdirAll(state, 0700); err != nil {
-		return result, fmt.Errorf("create isolated state dir: %w", err)
+		return result, fmt.Errorf("create session state dir: %w", err)
 	}
-	agentDir, sessions := filepath.Join(state, "agent"), filepath.Join(state, "sessions")
-	for _, d := range []string{agentDir, sessions} {
-		if err = os.MkdirAll(d, 0700); err != nil {
-			return result, err
-		}
-	}
-	tools := a.tools()
-	settings := map[string]any{"defaultTools": tools, "defaultProjectTrust": "never", "enableInstallTelemetry": false, "retry": map[string]any{"enabled": false}, "compaction": map[string]any{"enabled": false}}
-	if err = writeJSON(filepath.Join(agentDir, "settings.json"), settings); err != nil {
+	instructionFile := filepath.Join(state, "bot-instructions.txt")
+	if err = writeAtomic(instructionFile, []byte(additiveInstructions(req))); err != nil {
 		return result, err
 	}
-	models := map[string]any{"providers": map[string]any{"tresor-relay": map[string]any{"baseUrl": strings.TrimRight(req.RelayURL, "/"), "api": "openai-completions", "apiKey": req.RelayKey, "models": []any{map[string]any{"id": req.Model, "name": req.Model, "contextWindow": 128000, "maxTokens": 8192, "reasoning": false}}}}}
-	if err = writeJSON(filepath.Join(agentDir, "models.json"), models); err != nil {
+	sessionFile, err := prepareSession(ctx, node, cli, work, state, req)
+	if err != nil {
 		return result, err
 	}
-	env := safeEnvironment(agentDir, sessions)
-	env["PI_OFFLINE"] = "1"
-	env["PI_SKIP_VERSION_CHECK"] = "1"
-	env["PI_TELEMETRY"] = "0"
-	cmd := exec.Command(node, append(rpcNodeArgs(runtime.GOOS), cli, "--mode", "rpc", "--session-dir", sessions, "--session-id", req.AssignmentID, "--model", "tresor-relay/"+req.Model, "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files", "--no-approve", "--offline", "--tools", strings.Join(tools, ","))...)
+	result.SessionFile = sessionFile
+	extensionPath, err := writeBundledExtension(state)
+	if err != nil {
+		return result, err
+	}
+	cmd := exec.Command(node, append(rpcNodeArgs(runtime.GOOS), cli, "--mode", "rpc", "--session", sessionFile, "--extension", extensionPath)...)
 	cmd.Dir = work
-	cmd.Env = envSlice(env)
+	cmd.Env = os.Environ()
+	cmd.Env = append(cmd.Env, "TRESORBOT_PI_ASSIGNMENT="+req.AssignmentID, "TRESORBOT_PI_INSTRUCTIONS="+instructionFile, "TRESORBOT_PI_TOOL_URL="+req.ToolURL, "TRESORBOT_PI_TOOL_TOKEN="+req.ToolToken)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return result, err
@@ -141,7 +161,7 @@ func (a *Adapter) Run(ctx context.Context, req Request, onProgress func(Progress
 		return result, fmt.Errorf("start owned Pi: %w", startErr)
 	}
 	defer owner.Close()
-	result.Evidence = append(result.Evidence, "started Node Pi process with exact-version RPC interface", "isolated agent settings, models, and assignment session", "allowlisted environment excludes ambient provider credentials")
+	result.Evidence = append(result.Evidence, "started Node Pi process with exact-version RPC interface", "normal Pi resources/configuration preserved; session restored from trusted state pointer")
 	if a.Config.OnStarted != nil {
 		if err = a.Config.OnStarted(cmd.Process.Pid, req.AssignmentID); err != nil {
 			_ = stdin.Close()
@@ -203,7 +223,10 @@ func (a *Adapter) Run(ctx context.Context, req Request, onProgress func(Progress
 					continue
 				}
 				if r["type"] == "extension_ui_request" {
-					return nil, fmt.Errorf("unsupported extension UI request: %v", r["method"])
+					if err := handleExtensionUI(r, write); err != nil {
+						return nil, err
+					}
+					continue
 				}
 
 				if onProgress != nil {
@@ -255,16 +278,39 @@ func (a *Adapter) Run(ctx context.Context, req Request, onProgress func(Progress
 		_ = stdout.Close()
 		<-readerDone
 		if cause != nil {
+			cause = fmt.Errorf("%w (Pi stderr: %s)", cause, strings.TrimSpace(stderr.String()))
 			result.Completed = false
 		}
 		return result, cause
 	}
-	for _, c := range []string{"set_auto_retry", "set_auto_compaction"} {
-		if _, err = command(c, map[string]any{"enabled": false}); err != nil {
-			return finish(err)
+	prompt := req.Text
+	if len(req.Messages) == 0 {
+		prompt = req.Text
+		if strings.TrimSpace(prompt) == "" {
+			return finish(errors.New("text is required"))
+		}
+	} else {
+		prompt = ""
+		for i := len(req.Messages) - 1; i >= 0; i-- {
+			m := req.Messages[i]
+			if m.Role == "user" {
+				prompt = m.Content
+				break
+			}
+		}
+		if strings.TrimSpace(prompt) == "" {
+			return finish(errors.New("messages contain no user prompt"))
 		}
 	}
-	prompt := strings.Join([]string{"Assignment: " + req.AssignmentID, "Workspace: " + work, "State directory: " + state, "Instructions:", req.Instructions, "Task:", req.Text}, "\n\n")
+	preflight, preflightErr := command("get_state", map[string]any{})
+	if preflightErr != nil {
+		return finish(preflightErr)
+	}
+	stateData, _ := preflight["data"].(map[string]any)
+	modelData, _ := stateData["model"].(map[string]any)
+	if modelData == nil || modelData["id"] == "unknown" {
+		return finish(errors.New("local Pi has no available model; check provider credentials and Earth service environment"))
+	}
 	promptID := nextID()
 	if err = write(map[string]any{"id": promptID, "type": "prompt", "message": prompt}); err != nil {
 		return finish(err)
@@ -288,7 +334,10 @@ func (a *Adapter) Run(ctx context.Context, req Request, onProgress func(Progress
 			}
 			r := rr.rec
 			if r["type"] == "extension_ui_request" {
-				return finish(errors.New("unsupported extension UI request"))
+				if err := handleExtensionUI(r, write); err != nil {
+					return finish(err)
+				}
+				continue
 			}
 			if r["type"] == "response" {
 				if r["id"] == promptID {
@@ -312,6 +361,17 @@ func (a *Adapter) Run(ctx context.Context, req Request, onProgress func(Progress
 					result.StopReason, _ = m["stopReason"].(string)
 					result.Error, _ = m["errorMessage"].(string)
 					result.Text = assistantText(m)
+					provider, _ := m["provider"].(string)
+					model, _ := m["model"].(string)
+					if provider != "" {
+						result.Provider = provider
+					}
+					if model != "" {
+						result.Model = model
+					}
+					if !importedAssistant(m) {
+						addUsage(&result, m)
+					}
 				}
 			}
 			if r["type"] == "agent_settled" {
@@ -364,11 +424,67 @@ func rpcNodeArgs(platform string) []string {
 	return []string{"--import=data:text/javascript," + source}
 }
 
+func additiveInstructions(r Request) string {
+	parts := []string{}
+	if strings.TrimSpace(r.Instructions) != "" {
+		parts = append(parts, "Bot instructions:\n"+r.Instructions)
+	}
+	for _, m := range r.Messages {
+		if m.Role == "system" || m.Role == "developer" {
+			parts = append(parts, m.Role+" context:\n"+m.Content)
+		}
+	}
+	return strings.Join(parts, "\n\n")
+}
+func writeAtomic(path string, data []byte) error {
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+func prepareSession(ctx context.Context, node, cli, work, state string, req Request) (string, error) {
+	helperPath := filepath.Join(state, "session-helper.mjs")
+	if err := writeAtomic(helperPath, []byte(sessionHelper)); err != nil {
+		return "", err
+	}
+	msgJSON, err := json.Marshal(req.Messages)
+	if err != nil {
+		return "", err
+	}
+	outputPath := filepath.Join(state, "session-file.txt")
+	cmd := exec.CommandContext(ctx, node, helperPath, cli, state, work, conversationID(req), string(msgJSON), outputPath)
+	cmd.Env = os.Environ()
+	var stderr strings.Builder
+	cmd.Stderr = &limitedWriter{w: &stderr, max: 16 << 10}
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("initialize Pi session: %w (%s)", err, strings.TrimSpace(stderr.String()))
+	}
+	b, err := os.ReadFile(outputPath)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(b)), nil
+}
+func conversationID(r Request) string {
+	if r.ConversationID != "" {
+		return r.ConversationID
+	}
+	return r.AssignmentID
+}
+func writeBundledExtension(state string) (string, error) {
+	path := filepath.Join(state, "bot-context-extension.mjs")
+	return path, writeAtomic(path, []byte(botExtension))
+}
+
 func validate(r Request) error {
-	for n, v := range map[string]string{"assignment id": r.AssignmentID, "workspace": r.Workspace, "state dir": r.StateDir, "model": r.Model, "relay URL": r.RelayURL, "relay key": r.RelayKey, "text": r.Text} {
+	for n, v := range map[string]string{"assignment id": r.AssignmentID, "workspace": r.Workspace, "state dir": r.StateDir} {
 		if strings.TrimSpace(v) == "" {
 			return fmt.Errorf("%s is required", n)
 		}
+	}
+	if len(r.Messages) == 0 && strings.TrimSpace(r.Text) == "" {
+		return errors.New("text or messages are required")
 	}
 	if !filepath.IsAbs(r.Workspace) || !filepath.IsAbs(r.StateDir) {
 		return errors.New("workspace and state dir must be absolute paths")

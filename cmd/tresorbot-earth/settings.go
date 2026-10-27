@@ -59,6 +59,6 @@ func (s *settingsState) Execute(ctx context.Context, a contracts.Assign, progres
 	if !filepath.IsAbs(bot.Workspace) || e != nil || !info.IsDir() {
 		return piadapter.Result{}, errors.New("task workspace must be an existing absolute directory on Earth")
 	}
-	ex := earthexec.New(earthexec.Config{NodePath: c.NodePath, PiPath: c.PiPath, CLIPath: c.PiCLIPath, Tools: c.PiTools, StateDir: c.StateDir, RequireGatewayScope: true, Authorize: earthexec.AssignmentAuthorization})
+	ex := earthexec.New(earthexec.Config{NodePath: c.NodePath, PiPath: c.PiPath, CLIPath: c.PiCLIPath, Tools: c.PiTools, StateDir: c.StateDir, SunURL: c.SunURL, RunnerID: c.RunnerID, RunnerToken: c.RunnerToken})
 	return ex.Execute(ctx, a, progress, started)
 }

@@ -40,7 +40,16 @@ func ChatInvoker(st *store.Store, wake func(), parse func(json.RawMessage, strin
 		}
 		keySeen := false
 		key := ""
+		sessionID := ""
+		sessionSeen := false
 		for k, v := range request.Headers {
+			if http.CanonicalHeaderKey(k) == "X-Tresorbot-Session-Id" {
+				if len(v) != 1 || sessionSeen || v[0] == "" {
+					chatFailure(w, 400, "invalid_session_id")
+					return
+				}
+				sessionID, sessionSeen = v[0], true
+			}
 			if http.CanonicalHeaderKey(k) == "Idempotency-Key" {
 				if len(v) != 1 || keySeen {
 					chatFailure(w, 400, "invalid_idempotency_key")
@@ -50,16 +59,33 @@ func ChatInvoker(st *store.Store, wake func(), parse func(json.RawMessage, strin
 				key = v[0]
 			}
 		}
-		task, _, err := st.AdmitTask(bot.ID, "bridge:"+input.BindingID, key, taskBody)
+		var task store.Task
+		if _, chat := payload["chat"]; chat {
+			task, _, err = st.AdmitConversationTask(bot.ID, "bridge:"+input.BindingID, key, sessionID, taskBody)
+		} else {
+			task, _, err = st.AdmitTask(bot.ID, "bridge:"+input.BindingID, key, taskBody)
+		}
 		if err != nil {
 			code := 503
 			if err == store.ErrConflict {
 				code = 409
 			}
+			if err == store.ErrInvalid {
+				code = 400
+			}
 			chatFailure(w, code, "task_admission_failed")
 			return
 		}
 		w.Header().Set("X-Tresor-Task-ID", task.ID)
+		var admitted struct {
+			SessionID string `json:"session_id"`
+		}
+		if json.Unmarshal(task.Input, &admitted) == nil && admitted.SessionID != "" {
+			sessionID = admitted.SessionID
+		}
+		if sessionID != "" {
+			w.Header().Set("X-TresorBot-Session-ID", sessionID)
+		}
 		if wake != nil {
 			wake()
 		}
@@ -92,19 +118,24 @@ func ChatInvoker(st *store.Store, wake func(), parse func(json.RawMessage, strin
 		defer ticker.Stop()
 		for {
 			switch task.State {
-			case "completed", "failed", "cancelled":
+			case "completed", "failed", "cancelled", "needs_attention":
 				if task.State != "completed" {
 					failure(502, "task_"+task.State)
 					return
 				}
 				var result struct {
-					Text string `json:"text"`
+					Text     string          `json:"text"`
+					Usage    json.RawMessage `json:"usage"`
+					Model    string          `json:"model"`
+					Provider string          `json:"provider"`
 				}
 				if json.Unmarshal(task.Result, &result) != nil {
 					failure(502, "invalid_task_result")
 					return
 				}
+				usage := taskUsage(result.Usage)
 				base := map[string]any{"id": "chatcmpl-" + task.ID, "created": time.Now().Unix(), "model": bot.Alias}
+				base["tresorbot"] = map[string]any{"task_id": task.ID, "session_id": sessionID, "usage_scope": "task", "usage": usage, "pi_usage": result.Usage, "model": result.Model, "provider": result.Provider}
 				if stream {
 					w.Header().Set("Content-Type", "text/event-stream")
 					base["object"] = "chat.completion.chunk"
@@ -113,13 +144,23 @@ func ChatInvoker(st *store.Store, wake func(), parse func(json.RawMessage, strin
 					fmt.Fprintf(w, "data: %s\n\n", b)
 					base["choices"] = []any{map[string]any{"index": 0, "delta": map[string]any{}, "finish_reason": "stop"}}
 					b, _ = json.Marshal(base)
-					fmt.Fprintf(w, "data: %s\n\ndata: [DONE]\n\n", b)
+					fmt.Fprintf(w, "data: %s\n\n", b)
+					if usage != nil && includeUsage(input.Body) {
+						base["choices"] = []any{}
+						base["usage"] = usage
+						b, _ = json.Marshal(base)
+						fmt.Fprintf(w, "data: %s\n\n", b)
+					}
+					fmt.Fprint(w, "data: [DONE]\n\n")
 					if f, ok := w.(http.Flusher); ok {
 						f.Flush()
 					}
 				} else {
 					w.Header().Set("Content-Type", "application/json")
 					base["object"] = "chat.completion"
+					if usage != nil {
+						base["usage"] = usage
+					}
 					base["choices"] = []any{map[string]any{"index": 0, "message": map[string]string{"role": "assistant", "content": result.Text}, "finish_reason": "stop"}}
 					_ = json.NewEncoder(w).Encode(base)
 				}

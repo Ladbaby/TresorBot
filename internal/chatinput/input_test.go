@@ -6,6 +6,27 @@ import (
 	"testing"
 )
 
+func TestParseAcceptsClientCompletionLimitHints(t *testing.T) {
+	for _, field := range []string{"max_tokens", "max_completion_tokens"} {
+		for _, value := range []string{"1", "4096", "null"} {
+			raw := json.RawMessage(`{"model":"a","` + field + `":` + value + `,"messages":[{"role":"user","content":"hello"}]}`)
+			got, err := Parse(raw, "a")
+			if err != nil {
+				t.Fatal(err)
+			}
+			b, _ := json.Marshal(got)
+			if strings.Contains(string(b), field) {
+				t.Fatal("client hint leaked into Pi task", string(b))
+			}
+		}
+		for _, value := range []string{"0", "-1", "1.5", `"4096"`, "true"} {
+			if _, err := Parse(json.RawMessage(`{"model":"a","`+field+`":`+value+`,"messages":[{"role":"user","content":"hello"}]}`), "a"); err == nil {
+				t.Fatal("invalid limit accepted", value)
+			}
+		}
+	}
+}
+
 func TestParsePreservesTextRolesAndStream(t *testing.T) {
 	raw := json.RawMessage(`{"model":"alias-x","stream":true,"messages":[{"role":"system","content":"rules"},{"role":"user","content":"hello"},{"role":"assistant","content":"answer"}]}`)
 	got, err := Parse(raw, "alias-x")

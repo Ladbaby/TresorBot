@@ -71,10 +71,12 @@ Else, for a source build, follow these steps:
 You can run TresorBot as user services—no `sudo` needed, and they start on login. 
 Finish configuring each component first and stop any copy running in your terminal.
 
+> In the `.service` file below, be careful to include all the environment variables in your `~/.bashrc` (or `~/.zshrc`), such that things like node path, api key, and default permission mode can be correctly read.
+
 ```bash
 role=sun # Change to earth on a runner machine.
 mkdir -p ~/.config/systemd/user
-cat > ~/.config/systemd/user/tresorbot-$role.service <<EOF # also include the node path in Environment below
+cat > ~/.config/systemd/user/tresorbot-$role.service <<EOF
 [Unit]
 Description=TresorBot $role
 
@@ -106,6 +108,8 @@ To start at boot and keep running after logout, enable lingering once: `sudo log
 
 Alternatively, install units under `/etc/systemd/system`.
 Run these commands as the account that owns the installed binaries and configs.
+
+> In the `.service` file below, be careful to include all the environment variables in your `~/.bashrc` (or `~/.zshrc`), such that things like node path, api key, and default permission mode can be correctly read.
 
 ```bash
 role=earth # Change to sun for Sun; repeat for both if needed.
@@ -145,7 +149,9 @@ If Node is installed through nvm, add the directory containing `node` to the uni
 
 ## Connect Tresor
 
-Create a Tresor alias named `bot/personal` pointing to the provider/model you want that bot to use. Other bots need their own aliases too.
+Create a Tresor alias named `bot/personal` for routing chat to the bot (other bots need their own aliases too).
+This selects the bot, **not** Pi's inference model.
+Earth starts normal local Pi in the bot's workspace, using its existing settings, model selection, credentials, extensions, skills and context.
 
 With Tresor running, install the bridge from the sibling plugin repository:
 

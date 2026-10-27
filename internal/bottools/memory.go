@@ -15,6 +15,7 @@ import (
 )
 
 type Scope struct {
+	RunnerID                                         string
 	ExecutionID, AssignmentID, BotID, Service, Alias string
 	Epoch                                            int64
 }

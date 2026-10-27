@@ -67,7 +67,7 @@ func (h *Handler) PrepareDelegation(ctx context.Context, scope Scope, r Request)
 	if err := ctx.Err(); err != nil {
 		return store.Task{}, nil, 503, err
 	}
-	g, err := h.s.ValidateGatewayExecution(scope.ExecutionID, scope.AssignmentID, scope.BotID, scope.Alias, scope.Service, scope.Epoch)
+	g, err := h.validateScope(scope)
 	if err != nil {
 		return store.Task{}, domain("execution_unauthorized"), 403, nil
 	}
@@ -96,7 +96,7 @@ func (h *Handler) PrepareDelegation(ctx context.Context, scope Scope, r Request)
 	// The dependency hash includes context even when empty; replay cannot silently
 	// change the specialist's input. Nothing from the parent is implicitly copied.
 	body, _ := json.Marshal(map[string]string{"text": "Delegated task:\n" + args.Task + "\n\nRelevant context:\n" + args.Context, "delegated_task": args.Task, "relevant_context": args.Context})
-	child, err := h.s.AdmitChild(g.TaskID, args.Target, r.OperationID, body, store.ChildAdmissionFence{AssignmentID: scope.AssignmentID, ExecutionID: scope.ExecutionID, Epoch: scope.Epoch})
+	child, err := h.s.AdmitChild(g.TaskID, args.Target, r.OperationID, body, store.ChildAdmissionFence{RunnerID: scope.RunnerID, AssignmentID: scope.AssignmentID, ExecutionID: scope.ExecutionID, Epoch: scope.Epoch})
 	if err != nil {
 		switch {
 		case errors.Is(err, store.ErrConflict):
@@ -108,6 +108,17 @@ func (h *Handler) PrepareDelegation(ctx context.Context, scope Scope, r Request)
 	}
 	return child, nil, 200, nil
 }
+func (h *Handler) validateScope(scope Scope) (store.GatewayRegistration, error) {
+	if scope.RunnerID == "" {
+		return h.s.ValidateGatewayExecution(scope.ExecutionID, scope.AssignmentID, scope.BotID, scope.Alias, scope.Service, scope.Epoch)
+	}
+	task, err := h.s.ValidateNativeAssignment(scope.AssignmentID, scope.RunnerID, scope.Epoch)
+	if err != nil || task.BotID != scope.BotID {
+		return store.GatewayRegistration{}, store.ErrConflict
+	}
+	return store.GatewayRegistration{TaskID: task.ID}, nil
+}
+
 func validOperationID(id string) bool {
 	if len(id) != 64 {
 		return false
@@ -126,7 +137,7 @@ func (h *Handler) AwaitChild(ctx context.Context, scope Scope, id string) (any, 
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 	for {
-		g, err := h.s.ValidateGatewayExecution(scope.ExecutionID, scope.AssignmentID, scope.BotID, scope.Alias, scope.Service, scope.Epoch)
+		g, err := h.validateScope(scope)
 		if err != nil {
 			return nil, errors.New("delegation execution no longer authorized")
 		}

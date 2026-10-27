@@ -82,7 +82,7 @@ func Open(c config.Config) (*Application, error) {
 	if registry != nil {
 		cleanup = registry.Cleanup
 	}
-	app.hub = runnertransport.New(runnertransport.Options{AuthorizeAssignment: app.authorizeGateway(registry), Store: s, Reconciler: reconcileStore{s}, Changed: func() { app.dispatch.Wake() }, Disconnected: func(id string) { app.dispatch.Wake() }})
+	app.hub = runnertransport.New(runnertransport.Options{Store: s, Reconciler: reconcileStore{s}, Changed: func() { app.dispatch.Wake() }, Disconnected: func(id string) { app.dispatch.Wake() }})
 	app.dispatch = newDispatchLoop(s, app.hub, func(ctx context.Context, a store.Assignment) error {
 		return app.hub.Cancel(ctx, a.RunnerID, a.ID, a.Epoch)
 	}, cleanup)
@@ -91,6 +91,7 @@ func Open(c config.Config) (*Application, error) {
 	if service != nil {
 		mux.Handle("/integration/", service)
 	}
+	mux.Handle("/api/runner/tools/", app.nativeTools())
 	mux.Handle("/api/runner/connect", app.hub)
 	mux.Handle("/", h)
 	app.Handler = mux

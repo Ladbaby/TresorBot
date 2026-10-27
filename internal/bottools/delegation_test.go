@@ -11,6 +11,11 @@ import (
 )
 
 func TestDelegationReattachesChildAndRejectsChangedContext(t *testing.T) {
+	for _, native := range []bool{false, true} {
+		t.Run(map[bool]string{false: "gateway", true: "native"}[native], func(t *testing.T) { testDelegationReattaches(t, native) })
+	}
+}
+func testDelegationReattaches(t *testing.T, native bool) {
 	s, err := store.Open(filepath.Join(t.TempDir(), "sun.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -24,7 +29,7 @@ func TestDelegationReattachesChildAndRejectsChangedContext(t *testing.T) {
 	}
 	runner, err := s.CreateRunner("earth")
 	must(err)
- must(s.UpdateRunnerMetadata(runner,t.TempDir(),"test"))
+	must(s.UpdateRunnerMetadata(runner, t.TempDir(), "test"))
 	parent, err := s.CreateBot(store.Bot{Alias: "bot/parent", Name: "Parent", Enabled: true, RunnerID: runner})
 	must(err)
 	specialist, err := s.CreateBot(store.Bot{Alias: "bot/specialist", Name: "Specialist", Enabled: true, RunnerID: runner, Instructions: "PRIVATE"})
@@ -35,12 +40,18 @@ func TestDelegationReattachesChildAndRejectsChangedContext(t *testing.T) {
 	a, err := s.ClaimTask(task.ID, runner)
 	must(err)
 	must(s.Accept(a))
-	must(s.InitGatewaySchema())
-	_, _, err = s.ReserveGatewayExecution(store.GatewayRegistration{ExecutionID: a.ExecutionID, AssignmentID: a.ID, TaskID: task.ID, BotID: parent.ID, Alias: parent.Alias, BindingID: "binding", URL: "http://localhost", Epoch: a.Epoch})
-	must(err)
-	must(s.ActivateGatewayExecution(a.ExecutionID, strings.Repeat("c", 64)))
+	if !native {
+		must(s.InitGatewaySchema())
+		_, _, err = s.ReserveGatewayExecution(store.GatewayRegistration{ExecutionID: a.ExecutionID, AssignmentID: a.ID, TaskID: task.ID, BotID: parent.ID, Alias: parent.Alias, BindingID: "binding", URL: "http://localhost", Epoch: a.Epoch})
+		must(err)
+		must(s.ActivateGatewayExecution(a.ExecutionID, strings.Repeat("c", 64)))
+	}
 	h := New(s, nil)
-	scope := Scope{a.ExecutionID, a.ID, parent.ID, "binding", parent.Alias, a.Epoch}
+	scope := Scope{ExecutionID: a.ExecutionID, AssignmentID: a.ID, BotID: parent.ID, Service: "binding", Alias: parent.Alias, Epoch: a.Epoch}
+	if native {
+		scope.RunnerID = runner
+		scope.ExecutionID = ""
+	}
 	defs, err := h.DelegationDefinitions(parent.ID)
 	must(err)
 	b, _ := json.Marshal(defs)

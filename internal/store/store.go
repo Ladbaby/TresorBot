@@ -11,10 +11,10 @@ import (
 )
 
 var (
-	ErrNotFound = errors.New("not found")
-	ErrConflict = errors.New("conflict")
-	ErrInvalid  = errors.New("invalid input or transition")
-	ErrDisabled = errors.New("bot disabled")
+	ErrNotFound          = errors.New("not found")
+	ErrConflict          = errors.New("conflict")
+	ErrInvalid           = errors.New("invalid input or transition")
+	ErrDisabled          = errors.New("bot disabled")
 	ErrWorkspaceRequired = errors.New("runner default workspace required")
 )
 
@@ -57,8 +57,8 @@ func (s *Store) migrate() error {
 	if err = tx.QueryRow(`SELECT COALESCE(MAX(version),0) FROM schema_migrations`).Scan(&version); err != nil {
 		return err
 	}
-	if version > 4 {
-		return fmt.Errorf("database schema %d is newer than supported version 4", version)
+	if version > 5 {
+		return fmt.Errorf("database schema %d is newer than supported version 5", version)
 	}
 	if version == 0 {
 		for _, q := range schemaV1 {
@@ -96,6 +96,14 @@ func (s *Store) migrate() error {
 			return fmt.Errorf("migration 4: %w", err)
 		}
 		if _, err = tx.Exec(`INSERT INTO schema_migrations VALUES(4)`); err != nil {
+			return err
+		}
+	}
+	if version < 5 {
+		if _, err = tx.Exec(`CREATE TABLE conversations(id TEXT PRIMARY KEY,bot_id TEXT NOT NULL REFERENCES bots(id),scope TEXT NOT NULL,session_id TEXT NOT NULL,last_input BLOB NOT NULL,task_id TEXT REFERENCES tasks(id),UNIQUE(bot_id,scope,session_id))`); err != nil {
+			return fmt.Errorf("migration 5: %w", err)
+		}
+		if _, err = tx.Exec(`INSERT INTO schema_migrations VALUES(5)`); err != nil {
 			return err
 		}
 	}
