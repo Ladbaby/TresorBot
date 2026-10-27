@@ -83,7 +83,7 @@ func (s *Store) CreateBot(b Bot) (Bot, error) {
 	if !validBot(b) {
 		return Bot{}, ErrInvalid
 	}
-	_, err := s.db.Exec(`INSERT INTO bots(id,alias,name,instructions,runner_id,workspace,adapter,shared_write,enabled) VALUES(?,?,?,?,NULLIF(?,''),?,?,?,?)`, b.ID, b.Alias, b.Name, b.Instructions, b.RunnerID, b.Workspace, b.Adapter, b.SharedWrite, b.Enabled)
+	_, err := s.db.Exec(`INSERT INTO bots(id,alias,name,instructions,runner_id,workspace,adapter,shared_write,enabled,kind) VALUES(?,?,?,?,NULLIF(?,''),?,?,?,?,?)`, b.ID, b.Alias, b.Name, b.Instructions, b.RunnerID, b.Workspace, b.Adapter, b.SharedWrite, b.Enabled, b.Kind)
 	return b, err
 }
 
@@ -227,6 +227,12 @@ func (s *Store) ReplaceContacts(id string, contacts []Contact) error {
 			return err
 		}
 	}
+	// The built-in Worker is always a permitted recipient. Re-insert it so a
+	// user contact edit never silently drops it (INSERT OR IGNORE keeps this
+	// idempotent when the user already listed the Worker explicitly).
+	if err = ensureWorkerContactTx(tx, id); err != nil {
+		return err
+	}
 	return tx.Commit()
 }
 func (s *Store) ListContacts(id string) ([]Contact, error) {
@@ -249,3 +255,104 @@ func (s *Store) ListContacts(id string) ([]Contact, error) {
 	return out, rows.Err()
 }
 func snapshot(b Bot) []byte { data, _ := json.Marshal(b); return data }
+
+// WorkerAlias is the fixed alias of the built-in Worker bot. It is always
+// present and always a permitted recipient for every enabled bot.
+const WorkerAlias = "bot/worker"
+
+// EnsureWorker idempotently creates the built-in Worker bot and returns its
+// ID. The Worker is a stateless recipient (no memory, no delegation).
+func (s *Store) EnsureWorker() (string, error) {
+	if b, err := s.BotByAlias(WorkerAlias); err == nil {
+		return b.ID, nil
+	} else if err != ErrNotFound {
+		return "", err
+	}
+	b, err := s.CreateBot(Bot{Alias: WorkerAlias, Name: "Worker", Enabled: true, Kind: Worker})
+	if err != nil {
+		return "", err
+	}
+	return b.ID, nil
+}
+
+// EnsureWorkerContact idempotently adds the built-in Worker as a contact of
+// the given bot. It is a no-op for the Worker itself.
+func (s *Store) EnsureWorkerContact(botID string) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err = ensureWorkerContactTx(tx, botID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// ensureWorkerContactTx adds the Worker contact for botID inside an existing
+// transaction. Skips when botID is the Worker or the bot is not an enabled,
+// non-worker brain. INSERT OR IGNORE keeps it idempotent on the (sender,target)
+// primary key.
+func ensureWorkerContactTx(tx *sql.Tx, botID string) error {
+	var kind string
+	var enabled bool
+	err := tx.QueryRow(`SELECT COALESCE(kind,''),enabled FROM bots WHERE id=? AND deleted=0`, botID).Scan(&kind, &enabled)
+	if err == sql.ErrNoRows {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !enabled || kind == Worker {
+		return nil
+	}
+	workerID, err := workerIDTx(tx)
+	if err != nil {
+		return err
+	}
+	if workerID == "" || workerID == botID {
+		return nil
+	}
+	_, err = tx.Exec(`INSERT OR IGNORE INTO contacts(sender,target,description) VALUES(?,?,?)`, botID, workerID, "built-in worker")
+	return err
+}
+
+// workerIDTx resolves the Worker's ID inside a transaction, creating it if
+// absent. Returns "" when it cannot be resolved.
+func workerIDTx(tx *sql.Tx) (string, error) {
+	var id string
+	err := tx.QueryRow(`SELECT id FROM bots WHERE alias=? AND deleted=0`, WorkerAlias).Scan(&id)
+	if err == nil {
+		return id, nil
+	}
+	if err != sql.ErrNoRows {
+		return "", err
+	}
+	id = uuid.NewString()
+	if _, err = tx.Exec(`INSERT INTO bots(id,alias,name,instructions,workspace,adapter,shared_write,enabled,kind) VALUES(?,?,?,?,?,?,?,?,?)`,
+		id, WorkerAlias, "Worker", "", "", "pi", false, true, Worker); err != nil {
+		return "", err
+	}
+	return id, nil
+}
+
+// EnsureWorkerForAll seeds the Worker bot and guarantees it is a contact of
+// every enabled, non-worker bot. Idempotent; called at Sun startup.
+func (s *Store) EnsureWorkerForAll() error {
+	if _, err := s.EnsureWorker(); err != nil {
+		return err
+	}
+	bots, err := s.ListBots()
+	if err != nil {
+		return err
+	}
+	for _, b := range bots {
+		if !b.Enabled || b.IsWorker() {
+			continue
+		}
+		if err := s.EnsureWorkerContact(b.ID); err != nil {
+			return err
+		}
+	}
+	return nil
+}

@@ -150,3 +150,35 @@ func testDelegationReattaches(t *testing.T, native bool) {
 		t.Fatal("stale execution accepted", status)
 	}
 }
+
+func TestContactsIncludesWorker(t *testing.T) {
+	s, err := store.Open(filepath.Join(t.TempDir(), "sun.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	must := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	me := store.Bot{Alias: "bot/personal", Name: "Personal", Enabled: true}
+	created, err := s.CreateBot(me)
+	must(err)
+	must(s.EnsureWorkerForAll())
+	h := New(s, nil)
+	contacts, err := h.Contacts(created.ID)
+	must(err)
+	workerID, err := s.EnsureWorker()
+	must(err)
+	found := false
+	for _, c := range contacts {
+		if c.Target == workerID {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("worker missing from contacts: %+v", contacts)
+	}
+}

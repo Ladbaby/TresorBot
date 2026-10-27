@@ -53,8 +53,17 @@ func TestBotsContactsAndSnapshots(t *testing.T) {
 	}
 	cs, err := s.ListContacts(a.ID)
 	must(t, err)
-	if len(cs) != 1 || cs[0].Description != "research" {
-		t.Fatal("replacement not atomic")
+	// Replacement is atomic: the failed duplicate/missing attempts above must
+	// not have corrupted state. The explicit "research" contact survives, and
+	// the always-present built-in Worker contact is preserved alongside it.
+	research := 0
+	for _, c := range cs {
+		if c.Target == b.ID && c.Description == "research" {
+			research++
+		}
+	}
+	if research != 1 {
+		t.Fatal("replacement not atomic", cs)
 	}
 	task, fresh, err := s.AdmitTask(a.ID, "owner", "key", []byte(`{"b":2,"a":1}`))
 	must(t, err)

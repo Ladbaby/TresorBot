@@ -43,6 +43,12 @@ func Open(c config.Config) (*Application, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open task store: %w", err)
 	}
+	// Seed the built-in Worker bot and guarantee it is a contact of every
+	// enabled bot before any request is served.
+	if err = s.EnsureWorkerForAll(); err != nil {
+		s.Close()
+		return nil, fmt.Errorf("seed worker: %w", err)
+	}
 	m, err := memory.Open(c.MemoryRoot, func(botID string) (bool, error) {
 		b, err := s.GetBot(botID)
 		if err != nil {
