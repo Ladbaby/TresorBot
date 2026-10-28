@@ -199,7 +199,7 @@ func claimTask(tx *sql.Tx, id, runner string) (Assignment, error) {
 		}
 	}
 	var active int
-	if err = tx.QueryRow(`SELECT COUNT(*) FROM tasks WHERE bot_id=? AND state IN('dispatching','running','waiting_child','cancelling','needs_attention')`, t.BotID).Scan(&active); err != nil {
+	if err = tx.QueryRow(`SELECT COUNT(*) FROM tasks WHERE bot_id=? AND direct_parent=0 AND state IN('dispatching','running','waiting_child','cancelling','needs_attention')`, t.BotID).Scan(&active); err != nil {
 		return Assignment{}, err
 	}
 	if active > 0 {
@@ -408,13 +408,11 @@ func (s *Store) RecordEvent(r Report) error {
 			return err
 		}
 		if t.ParentID != "" {
-			// A synthesized direct-chat parent lives only for one delegation:
-			// finalize it once its child is terminal so it never lingers to
-			// block the sender bot's queue. A normal parent returns to running.
-			if _, err = tx.Exec(`UPDATE tasks SET state='completed', result=COALESCE(result,'{"text":""}') WHERE id=? AND direct_parent=1 AND NOT EXISTS(SELECT 1 FROM tasks WHERE parent_id=? AND state NOT IN('completed','failed','cancelled'))`, t.ParentID, t.ParentID); err != nil {
-				return err
-			}
-			if _, err = tx.Exec(`UPDATE tasks SET state='running' WHERE id=? AND state='waiting_child' AND direct_parent=0 AND NOT EXISTS(SELECT 1 FROM tasks WHERE parent_id=? AND state NOT IN('completed','failed','cancelled'))`, t.ParentID, t.ParentID); err != nil {
+			// Once the last child is terminal the parent returns to running so the
+			// next delegation can attach (a direct-chat execution delegates many
+			// times per parent). Stale direct parents are completed at startup by
+			// RecoverDirectParents; one_bot_slot excludes them, so lingering is safe.
+			if _, err = tx.Exec(`UPDATE tasks SET state='running' WHERE id=? AND state='waiting_child' AND NOT EXISTS(SELECT 1 FROM tasks WHERE parent_id=? AND state NOT IN('completed','failed','cancelled'))`, t.ParentID, t.ParentID); err != nil {
 				return err
 			}
 		}

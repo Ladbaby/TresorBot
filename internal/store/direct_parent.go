@@ -34,8 +34,10 @@ func (s *Store) EnsureDirectParent(botID, executionID string) (Task, error) {
 	err = tx.QueryRow(`SELECT hash,task_id FROM request_keys WHERE scope=? AND key=?`, directParentScope, key).Scan(&oldHash, &id)
 	if err == nil {
 		// Reuse the existing parent. Revive it if a prior turn left it in
-		// needs_attention so a new child can attach.
-		if _, err = tx.Exec(`UPDATE tasks SET state='running' WHERE id=? AND direct_parent=1 AND state='needs_attention'`, id); err != nil {
+		// needs_attention, or if it was completed by an older build or by
+		// startup recovery, so the next SendMessage in the same execution
+		// can attach a new child.
+		if _, err = tx.Exec(`UPDATE tasks SET state='running' WHERE id=? AND direct_parent=1 AND state IN('needs_attention','completed')`, id); err != nil {
 			return Task{}, err
 		}
 		t, err := getTask(tx, id)
@@ -68,19 +70,13 @@ func (s *Store) EnsureDirectParent(botID, executionID string) (Task, error) {
 	return t, tx.Commit()
 }
 
-// FinalizeDirectParent marks a synthesized direct-chat parent completed once it
-// has no non-terminal children, so it never lingers to block the sender bot's
-// queue. Safe to call repeatedly and on non-direct tasks (no-op).
-func (s *Store) FinalizeDirectParent(id string) error {
-	_, err := s.db.Exec(`UPDATE tasks SET state='completed', result=COALESCE(result,'{"text":""}') WHERE id=? AND direct_parent=1 AND state IN('running','waiting_child','needs_attention') AND NOT EXISTS(SELECT 1 FROM tasks WHERE parent_id=? AND state NOT IN('completed','failed','cancelled'))`, id, id)
-	return err
-}
-
 // RecoverDirectParents completes any stale synthesized direct-chat parents at
 // startup (e.g. after a crash mid-AwaitChild) so they cannot block the sender
-// bot's future claims.
+// bot's future claims. A direct parent returns to 'running' after each child so
+// a single execution can delegate many times; this cleans up only parents left
+// with no non-terminal children (the execution has ended).
 func (s *Store) RecoverDirectParents() error {
-	_, err := s.db.Exec(`UPDATE tasks SET state='completed', result=COALESCE(result,'{"text":""}') WHERE direct_parent=1 AND state IN('running','waiting_child','needs_attention') AND NOT EXISTS(SELECT 1 FROM tasks WHERE parent_id=tasks.id AND state NOT IN('completed','failed','cancelled'))`)
+	_, err := s.db.Exec(`UPDATE tasks SET state='completed', result=COALESCE(result,'{"text":""}') WHERE direct_parent=1 AND state IN('running','waiting_child','needs_attention') AND NOT EXISTS(SELECT 1 FROM tasks c WHERE c.parent_id=tasks.id AND c.state NOT IN('completed','failed','cancelled'))`)
 	return err
 }
 

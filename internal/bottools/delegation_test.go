@@ -233,11 +233,100 @@ func TestDirectChatSendMessageAdmitsChildAndReturnsReply(t *testing.T) {
 	if m["text"] != "listing done" {
 		t.Fatalf("reply=%+v", res)
 	}
-	// The synthesized direct parent must be finalized so it does not linger.
+	// The synthesized direct parent returns to running after its child so the
+	// next delegation in the same execution can attach; startup recovery
+	// completes it later.
 	parent, err := s.GetTask(child.ParentID)
 	must(err)
-	if parent.State != "completed" {
-		t.Fatalf("direct parent state=%q want completed", parent.State)
+	if parent.State != "running" {
+		t.Fatalf("direct parent state=%q want running", parent.State)
+	}
+}
+
+// TestDirectChatSecondSendMessageInSameExecutionSucceeds reproduces the bug
+// where the second TresorBotSendMessage in one direct-chat execution returned
+// 409 delegation_conflict: the synthesized parent was finalized after the first
+// child, so the next delegation could not attach. The parent must return to
+// running after each child so a single execution can delegate many times.
+func TestDirectChatSecondSendMessageInSameExecutionSucceeds(t *testing.T) {
+	s, err := store.Open(filepath.Join(t.TempDir(), "sun.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	must := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	runner, err := s.CreateRunner("earth")
+	must(err)
+	must(s.UpdateRunnerMetadata(runner, t.TempDir(), "test"))
+	me, err := s.CreateBot(store.Bot{Alias: "bot/personal", Name: "Personal", Enabled: true, RunnerID: runner})
+	must(err)
+	worker, err := s.CreateBot(store.Bot{Alias: "bot/worker", Name: "Worker", Enabled: true, Kind: store.Worker, RunnerID: runner})
+	must(err)
+	must(s.ReplaceContacts(me.ID, []store.Contact{{Target: worker.ID, Description: "worker"}}))
+	h := New(s, nil)
+	scope := Scope{ExecutionID: "exec-dc-multi", BotID: me.ID, Alias: me.Alias, Service: "local", Epoch: 1, DirectChat: true}
+
+	// Round 1: first delegation succeeds.
+	args1, _ := json.Marshal(map[string]string{"target_bot": worker.ID, "task": "list /root", "relevant_context": "read only"})
+	r1 := Request{OperationID: strings.Repeat("a", 64), Tool: "TresorBotSendMessage", Arguments: args1}
+	child1, payload, status, err := h.PrepareDelegation(context.Background(), scope, r1)
+	must(err)
+	if status != 200 {
+		t.Fatalf("round 1 PrepareDelegation status=%d payload=%+v", status, payload)
+	}
+	a1, err := s.ClaimTask(child1.ID, runner)
+	must(err)
+	must(s.Accept(a1))
+	term1 := contracts.Terminal{RunnerRecord: contracts.RunnerRecord{Version: 1, Type: "terminal", ID: uuid.NewString(), RunnerID: runner, AssignmentID: a1.ID, Epoch: a1.Epoch}, State: contracts.Completed, Result: json.RawMessage(`{"text":"first done"}`)}
+	must(s.RecordTerminal(term1, 1))
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	res1, err := h.AwaitChild(ctx, scope, child1.ID)
+	must(err)
+	if res1.(map[string]any)["text"] != "first done" {
+		t.Fatalf("round 1 reply=%+v", res1)
+	}
+
+	// Round 2: a second, distinct delegation in the SAME execution must also
+	// succeed (this is the assertion that failed with 409 before the fix).
+	args2, _ := json.Marshal(map[string]string{"target_bot": worker.ID, "task": "list /etc", "relevant_context": "read only"})
+	r2 := Request{OperationID: strings.Repeat("b", 64), Tool: "TresorBotSendMessage", Arguments: args2}
+	child2, payload, status, err := h.PrepareDelegation(context.Background(), scope, r2)
+	must(err)
+	if status != 200 {
+		t.Fatalf("round 2 PrepareDelegation status=%d payload=%+v", status, payload)
+	}
+	if child2.ID == child1.ID {
+		t.Fatal("round 2 must admit a new child, not replay round 1")
+	}
+
+	// Idempotency: replaying round 1's operation returns the original child.
+	replay, _, status, err := h.PrepareDelegation(context.Background(), scope, r1)
+	must(err)
+	if status != 200 || replay.ID != child1.ID {
+		t.Fatalf("replay status=%d id=%s want %s", status, replay.ID, child1.ID)
+	}
+
+	// Drive round 2 to completion; parent still returns to running.
+	a2, err := s.ClaimTask(child2.ID, runner)
+	must(err)
+	must(s.Accept(a2))
+	term2 := contracts.Terminal{RunnerRecord: contracts.RunnerRecord{Version: 1, Type: "terminal", ID: uuid.NewString(), RunnerID: runner, AssignmentID: a2.ID, Epoch: a2.Epoch}, State: contracts.Completed, Result: json.RawMessage(`{"text":"second done"}`)}
+	must(s.RecordTerminal(term2, 1))
+	res2, err := h.AwaitChild(ctx, scope, child2.ID)
+	must(err)
+	if res2.(map[string]any)["text"] != "second done" {
+		t.Fatalf("round 2 reply=%+v", res2)
+	}
+	parent, err := s.GetTask(child1.ParentID)
+	must(err)
+	if parent.State != "running" {
+		t.Fatalf("direct parent state=%q want running after both children", parent.State)
 	}
 }
 

@@ -278,14 +278,8 @@ func (h *Handler) AwaitChild(ctx context.Context, scope Scope, id string) (any, 
 			if json.Unmarshal(child.Result, &result) != nil || len(result.Text) > 256*1024 {
 				return nil, errors.New("invalid child result")
 			}
-			if scope.DirectChat {
-				_ = h.s.FinalizeDirectParent(g.TaskID)
-			}
 			return map[string]any{"child_task_id": child.ID, "status": child.State, "text": result.Text}, nil
 		case "failed", "cancelled":
-			if scope.DirectChat {
-				_ = h.s.FinalizeDirectParent(g.TaskID)
-			}
 			return map[string]any{"child_task_id": child.ID, "status": child.State, "error": map[string]string{"code": "child_" + child.State}}, nil
 		}
 		select {
