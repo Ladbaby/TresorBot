@@ -7,6 +7,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/google/uuid"
+	"tresorbot/internal/contracts"
 	"tresorbot/internal/store"
 )
 
@@ -180,5 +183,113 @@ func TestContactsIncludesWorker(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("worker missing from contacts: %+v", contacts)
+	}
+}
+
+func TestDirectChatSendMessageAdmitsChildAndReturnsReply(t *testing.T) {
+	s, err := store.Open(filepath.Join(t.TempDir(), "sun.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	must := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	runner, err := s.CreateRunner("earth")
+	must(err)
+	must(s.UpdateRunnerMetadata(runner, t.TempDir(), "test"))
+	me, err := s.CreateBot(store.Bot{Alias: "bot/personal", Name: "Personal", Enabled: true, RunnerID: runner})
+	must(err)
+	worker, err := s.CreateBot(store.Bot{Alias: "bot/worker", Name: "Worker", Enabled: true, Kind: store.Worker, RunnerID: runner})
+	must(err)
+	must(s.ReplaceContacts(me.ID, []store.Contact{{Target: worker.ID, Description: "worker"}}))
+	h := New(s, nil)
+	// Direct chat: no gateway registration, no RunnerID — authorized by alias.
+	scope := Scope{ExecutionID: "exec-dc-1", BotID: me.ID, Alias: me.Alias, Service: "local", Epoch: 1, DirectChat: true}
+	args, _ := json.Marshal(map[string]string{"target_bot": worker.ID, "task": "list /root", "relevant_context": "read only"})
+	r := Request{OperationID: strings.Repeat("a", 64), Tool: "TresorBotSendMessage", Arguments: args}
+	child, payload, status, err := h.PrepareDelegation(context.Background(), scope, r)
+	must(err)
+	if status != 200 {
+		t.Fatalf("PrepareDelegation status=%d payload=%+v", status, payload)
+	}
+	if child.BotID != worker.ID {
+		t.Fatalf("child bot=%s want %s", child.BotID, worker.ID)
+	}
+	// Drive the child to completion on Earth.
+	a, err := s.ClaimTask(child.ID, runner)
+	must(err)
+	must(s.Accept(a))
+	term := contracts.Terminal{RunnerRecord: contracts.RunnerRecord{Version: 1, Type: "terminal", ID: uuid.NewString(), RunnerID: runner, AssignmentID: a.ID, Epoch: a.Epoch}, State: contracts.Completed, Result: json.RawMessage(`{"text":"listing done"}`)}
+	must(s.RecordTerminal(term, 1))
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	res, err := h.AwaitChild(ctx, scope, child.ID)
+	must(err)
+	m := res.(map[string]any)
+	if m["text"] != "listing done" {
+		t.Fatalf("reply=%+v", res)
+	}
+	// The synthesized direct parent must be finalized so it does not linger.
+	parent, err := s.GetTask(child.ParentID)
+	must(err)
+	if parent.State != "completed" {
+		t.Fatalf("direct parent state=%q want completed", parent.State)
+	}
+}
+
+func TestDirectChatSendMessageRejectsSelfMessage(t *testing.T) {
+	s, err := store.Open(filepath.Join(t.TempDir(), "sun.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	me, err := s.CreateBot(store.Bot{Alias: "bot/personal", Name: "Personal", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := New(s, nil)
+	scope := Scope{ExecutionID: "exec-dc-2", BotID: me.ID, Alias: me.Alias, Service: "local", Epoch: 1, DirectChat: true}
+	args, _ := json.Marshal(map[string]string{"target_bot": me.ID, "task": "x", "relevant_context": "y"})
+	r := Request{OperationID: strings.Repeat("b", 64), Tool: "TresorBotSendMessage", Arguments: args}
+	_, payload, status, err := h.PrepareDelegation(context.Background(), scope, r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status != 403 {
+		t.Fatalf("self-message status=%d payload=%+v", status, payload)
+	}
+}
+
+func TestDirectChatSendMessageRejectsWorkerSender(t *testing.T) {
+	s, err := store.Open(filepath.Join(t.TempDir(), "sun.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	worker, err := s.CreateBot(store.Bot{Alias: "bot/worker", Name: "Worker", Enabled: true, Kind: store.Worker})
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := s.CreateBot(store.Bot{Alias: "bot/other", Name: "Other", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ReplaceContacts(worker.ID, []store.Contact{{Target: other.ID, Description: "x"}}); err != nil {
+		t.Fatal(err)
+	}
+	h := New(s, nil)
+	scope := Scope{ExecutionID: "exec-dc-3", BotID: worker.ID, Alias: worker.Alias, Service: "local", Epoch: 1, DirectChat: true}
+	args, _ := json.Marshal(map[string]string{"target_bot": other.ID, "task": "x", "relevant_context": "y"})
+	r := Request{OperationID: strings.Repeat("c", 64), Tool: "TresorBotSendMessage", Arguments: args}
+	_, payload, status, err := h.PrepareDelegation(context.Background(), scope, r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status != 403 {
+		t.Fatalf("worker sender status=%d payload=%+v", status, payload)
 	}
 }

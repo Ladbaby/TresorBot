@@ -57,8 +57,8 @@ func (s *Store) migrate() error {
 	if err = tx.QueryRow(`SELECT COALESCE(MAX(version),0) FROM schema_migrations`).Scan(&version); err != nil {
 		return err
 	}
-	if version > 6 {
-		return fmt.Errorf("database schema %d is newer than supported version 6", version)
+	if version > 7 {
+		return fmt.Errorf("database schema %d is newer than supported version 7", version)
 	}
 	if version == 0 {
 		for _, q := range schemaV1 {
@@ -115,6 +115,22 @@ func (s *Store) migrate() error {
 			return fmt.Errorf("migration 6: %w", err)
 		}
 		if _, err = tx.Exec(`INSERT INTO schema_migrations VALUES(6)`); err != nil {
+			return err
+		}
+	}
+	if version < 7 {
+		if _, err = tx.Exec(`ALTER TABLE tasks ADD COLUMN direct_parent INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return fmt.Errorf("migration 7: %w", err)
+		}
+		// Synthesized direct-chat parents must not occupy the bot's single
+		// active-task slot, so exclude them from the one_bot_slot index.
+		if _, err = tx.Exec(`DROP INDEX one_bot_slot`); err != nil {
+			return fmt.Errorf("migration 7: %w", err)
+		}
+		if _, err = tx.Exec(`CREATE UNIQUE INDEX one_bot_slot ON tasks(bot_id) WHERE direct_parent=0 AND state IN('dispatching','running','waiting_child','cancelling','needs_attention')`); err != nil {
+			return fmt.Errorf("migration 7: %w", err)
+		}
+		if _, err = tx.Exec(`INSERT INTO schema_migrations VALUES(7)`); err != nil {
 			return err
 		}
 	}

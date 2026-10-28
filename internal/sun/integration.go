@@ -87,7 +87,12 @@ func (a *Application) integration(c config.Config) (*gateway.Registry, *bridge.S
 				failure(403, "bot_not_found")
 				return
 			}
-			scope := bottools.Scope{ExecutionID: ex.ExecutionID, AssignmentID: ex.AssignmentID, BotID: bot.ID, Alias: ex.AliasID, Service: ex.Service, Epoch: ex.Epoch}
+			// Direct chat is the alias-resolved managed-tools turn: Tresor
+			// synthesizes AssignmentID "chat" and there is no execution
+			// authority. A gateway-registered turn carries a real assignment and
+			// keeps its authority check.
+			directChat := ex.AssignmentID == "chat"
+			scope := bottools.Scope{ExecutionID: ex.ExecutionID, AssignmentID: ex.AssignmentID, BotID: bot.ID, Alias: ex.AliasID, Service: ex.Service, Epoch: ex.Epoch, DirectChat: directChat}
 			toolRequest := bottools.Request{OperationID: request.OperationID, Tool: request.Tool, Arguments: request.Arguments, Reconcile: request.Reconcile}
 			if request.Tool == "TresorBotEarthList" {
 				payload, status, e := tools.ListEarthTool(r.Context(), toolRequest)

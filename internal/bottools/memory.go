@@ -18,6 +18,9 @@ type Scope struct {
 	RunnerID                                         string
 	ExecutionID, AssignmentID, BotID, Service, Alias string
 	Epoch                                            int64
+	// DirectChat marks a gateway alias-resolved turn with no execution
+	// authority and no durable parent task. Delegation synthesizes a parent.
+	DirectChat bool
 }
 type Request struct {
 	OperationID, Tool string

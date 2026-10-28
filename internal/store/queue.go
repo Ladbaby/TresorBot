@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 
 	"github.com/google/uuid"
 )
@@ -110,7 +111,10 @@ func (s *Store) ReadOwnerEvents(after int64, taskID string, limit int) ([]OwnerE
 }
 
 func (s *Store) RecoverActiveTasks() error {
-	_, e := s.db.Exec(`UPDATE tasks SET state='needs_attention' WHERE state IN('dispatching','running','waiting_child','cancelling')`)
+	// Synthetic direct-chat parents are bookkeeping, not Earth executions: keep
+	// them in place so their queued children stay claimable (claimTask requires
+	// the parent in 'waiting_child'). Only real tasks are surfaced as uncertain.
+	_, e := s.db.Exec(`UPDATE tasks SET state='needs_attention' WHERE direct_parent=0 AND state IN('dispatching','running','waiting_child','cancelling')`)
 	return e
 }
 func (s *Store) RetryTask(id string) (Task, error) {
@@ -184,6 +188,50 @@ func (s *Store) ClaimNext(botID, runnerID string) (Assignment, error) {
 		return a, e
 	}
 	return a, tx.Commit()
+}
+
+// ClaimNextForRunner claims the oldest queued task eligible for runnerID: a
+// task pinned to runnerID (SendToEarth) or an unpinned task (any bot, including
+// runner-less bots like the Worker). claimTask rejects wrong-runner pins and
+// enforces per-bot FIFO, so ineligible candidates are skipped without breaking
+// ordering. Returns ErrNotFound when nothing is claimable.
+func (s *Store) ClaimNextForRunner(runnerID string) (Assignment, error) {
+	if runnerID == "" {
+		return Assignment{}, ErrInvalid
+	}
+	tx, e := s.db.Begin()
+	if e != nil {
+		return Assignment{}, e
+	}
+	defer tx.Rollback()
+	rows, e := tx.Query(`SELECT t.id FROM tasks t JOIN task_order o ON o.task_id=t.id WHERE t.state='queued' AND (t.target_runner_id=? OR t.target_runner_id IS NULL) ORDER BY o.position`, runnerID)
+	if e != nil {
+		return Assignment{}, e
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return Assignment{}, err
+		}
+		ids = append(ids, id)
+	}
+	rows.Close()
+	if e = rows.Err(); e != nil {
+		return Assignment{}, e
+	}
+	for _, id := range ids {
+		a, err := claimTask(tx, id, runnerID)
+		if err == nil {
+			return a, tx.Commit()
+		}
+		if errors.Is(err, ErrConflict) || errors.Is(err, ErrInvalid) || errors.Is(err, ErrDisabled) {
+			continue
+		}
+		return Assignment{}, err
+	}
+	return Assignment{}, ErrNotFound
 }
 
 // AdmitChild records child identity before any dispatch and checks the complete wait graph.

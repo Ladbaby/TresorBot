@@ -97,6 +97,23 @@ func (d *dispatchLoop) pass(ctx context.Context) {
 		return
 	}
 	s := scheduler.Scheduler{Store: d.store, Transport: d.transport}
+	// First present each available runner with the tasks it can claim: SendToEarth
+	// pins and unowned defaults (e.g. runner-less bots like the Worker). This runs
+	// before the bot-default loop so a pin wins before default dispatch consumes
+	// the bot's single active slot.
+	for _, r := range runners {
+		if ctx.Err() != nil {
+			return
+		}
+		if r.Revoked || !d.transport.Available(r.ID) {
+			continue
+		}
+		for {
+			if _, err := s.DispatchNextForRunner(ctx, r.ID); err != nil {
+				break
+			}
+		}
+	}
 	for _, b := range bots {
 		if ctx.Err() != nil {
 			return

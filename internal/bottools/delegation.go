@@ -201,7 +201,14 @@ func (h *Handler) PrepareDelegation(ctx context.Context, scope Scope, r Request)
 	// The dependency hash includes context even when empty; replay cannot silently
 	// change the specialist's input. Nothing from the parent is implicitly copied.
 	body, _ := json.Marshal(map[string]string{"text": "Delegated task:\n" + args.Task + "\n\nRelevant context:\n" + args.Context, "delegated_task": args.Task, "relevant_context": args.Context})
-	child, err := h.s.AdmitChild(g.TaskID, args.Target, r.OperationID, body, store.ChildOptions{TargetRunnerID: targetRunner}, store.ChildAdmissionFence{RunnerID: scope.RunnerID, AssignmentID: scope.AssignmentID, ExecutionID: scope.ExecutionID, Epoch: scope.Epoch})
+	// Direct chat has no execution authority to fence against; the alias was
+	// already resolved and the synthetic parent carries the identity. The
+	// Earth-Pi path keeps its assignment/execution fence.
+	var fences []store.ChildAdmissionFence
+	if !scope.DirectChat {
+		fences = append(fences, store.ChildAdmissionFence{RunnerID: scope.RunnerID, AssignmentID: scope.AssignmentID, ExecutionID: scope.ExecutionID, Epoch: scope.Epoch})
+	}
+	child, err := h.s.AdmitChild(g.TaskID, args.Target, r.OperationID, body, store.ChildOptions{TargetRunnerID: targetRunner}, fences...)
 	if err != nil {
 		switch {
 		case errors.Is(err, store.ErrConflict):
@@ -214,6 +221,16 @@ func (h *Handler) PrepareDelegation(ctx context.Context, scope Scope, r Request)
 	return child, nil, 200, nil
 }
 func (h *Handler) validateScope(scope Scope) (store.GatewayRegistration, error) {
+	if scope.DirectChat {
+		// Direct chat is authorized by alias with no execution authority and no
+		// durable parent task. Synthesize a lightweight parent so delegation can
+		// attach a child via AdmitChild.
+		t, err := h.s.EnsureDirectParent(scope.BotID, scope.ExecutionID)
+		if err != nil {
+			return store.GatewayRegistration{}, err
+		}
+		return store.GatewayRegistration{TaskID: t.ID}, nil
+	}
 	if scope.RunnerID == "" {
 		return h.s.ValidateGatewayExecution(scope.ExecutionID, scope.AssignmentID, scope.BotID, scope.Alias, scope.Service, scope.Epoch)
 	}
@@ -261,8 +278,14 @@ func (h *Handler) AwaitChild(ctx context.Context, scope Scope, id string) (any, 
 			if json.Unmarshal(child.Result, &result) != nil || len(result.Text) > 256*1024 {
 				return nil, errors.New("invalid child result")
 			}
+			if scope.DirectChat {
+				_ = h.s.FinalizeDirectParent(g.TaskID)
+			}
 			return map[string]any{"child_task_id": child.ID, "status": child.State, "text": result.Text}, nil
 		case "failed", "cancelled":
+			if scope.DirectChat {
+				_ = h.s.FinalizeDirectParent(g.TaskID)
+			}
 			return map[string]any{"child_task_id": child.ID, "status": child.State, "error": map[string]string{"code": "child_" + child.State}}, nil
 		}
 		select {

@@ -443,17 +443,28 @@ func writeAtomic(path string, data []byte) error {
 	}
 	return os.Rename(tmp, path)
 }
+// messagesJSON marshals imported messages as a JSON array. A nil slice must
+// serialize to "[]" (not "null") so the session helper's array methods work for
+// text-only tasks that carry no imported history.
+func messagesJSON(msgs []chatinput.Message) (string, error) {
+	if msgs == nil {
+		msgs = []chatinput.Message{}
+	}
+	b, err := json.Marshal(msgs)
+	return string(b), err
+}
+
 func prepareSession(ctx context.Context, node, cli, work, state string, req Request) (string, error) {
 	helperPath := filepath.Join(state, "session-helper.mjs")
 	if err := writeAtomic(helperPath, []byte(sessionHelper)); err != nil {
 		return "", err
 	}
-	msgJSON, err := json.Marshal(req.Messages)
+	msgJSON, err := messagesJSON(req.Messages)
 	if err != nil {
 		return "", err
 	}
 	outputPath := filepath.Join(state, "session-file.txt")
-	cmd := exec.CommandContext(ctx, node, helperPath, cli, state, work, conversationID(req), string(msgJSON), outputPath)
+	cmd := exec.CommandContext(ctx, node, helperPath, cli, state, work, conversationID(req), msgJSON, outputPath)
 	cmd.Env = os.Environ()
 	var stderr strings.Builder
 	cmd.Stderr = &limitedWriter{w: &stderr, max: 16 << 10}

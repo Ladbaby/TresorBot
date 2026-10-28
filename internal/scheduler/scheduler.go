@@ -37,3 +37,23 @@ func (s Scheduler) DispatchNext(ctx context.Context, botID, runnerID string) (st
 	}
 	return assignment, nil
 }
+
+// DispatchNextForRunner claims and dispatches the next task eligible for a
+// specific runner (SendToEarth pins and unowned defaults), regardless of the
+// bot's configured default runner.
+func (s Scheduler) DispatchNextForRunner(ctx context.Context, runnerID string) (store.Assignment, error) {
+	if err := ctx.Err(); err != nil {
+		return store.Assignment{}, err
+	}
+	if s.Transport == nil || !s.Transport.Available(runnerID) {
+		return store.Assignment{}, ErrUnavailable
+	}
+	assignment, err := s.Store.ClaimNextForRunner(runnerID)
+	if err != nil {
+		return assignment, err
+	}
+	if err = s.Transport.Dispatch(ctx, assignment); err != nil {
+		return assignment, errors.Join(err, s.Store.SetTaskState(assignment.TaskID, "dispatching", "needs_attention"))
+	}
+	return assignment, nil
+}

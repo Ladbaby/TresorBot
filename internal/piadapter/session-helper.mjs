@@ -24,6 +24,7 @@ if (existsSync(pointer)) {
 } else {
   const manager = SessionManager.create(cwd, resolve(stateDir, 'pi-sessions'));
   const messages = JSON.parse(messagesJSON);
+  if (!Array.isArray(messages)) throw new Error('imported messages must be a JSON array');
   const lastUser = messages.reduce((n, item, i) => item.role === 'user' ? i : n, -1);
   for (let i=0; i<messages.length; i++) {
     const item = messages[i];

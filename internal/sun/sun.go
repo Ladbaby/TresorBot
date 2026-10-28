@@ -68,6 +68,16 @@ func Open(c config.Config) (*Application, error) {
 		s.Close()
 		return nil, fmt.Errorf("recover tasks: %w", err)
 	}
+	if err = s.RecoverDirectParents(); err != nil {
+		m.Close()
+		s.Close()
+		return nil, fmt.Errorf("recover direct parents: %w", err)
+	}
+	if err = s.RecoverOrphanedChildren(); err != nil {
+		m.Close()
+		s.Close()
+		return nil, fmt.Errorf("recover orphaned children: %w", err)
+	}
 	authPath := c.DBPath + ".owner-sessions.db"
 	if c.DBPath == ":memory:" {
 		authPath = ":memory:"

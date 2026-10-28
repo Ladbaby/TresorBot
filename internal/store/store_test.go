@@ -616,7 +616,7 @@ func TestMigrationAndForeignKeys(t *testing.T) {
 	}
 	var version int
 	must(t, s.db.QueryRow(`SELECT MAX(version) FROM schema_migrations`).Scan(&version))
-	if version != 6 {
+	if version != 7 {
 		t.Fatal(version)
 	}
 	_, err = s.db.Exec(`INSERT INTO schema_migrations VALUES(99)`)
