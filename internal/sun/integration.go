@@ -30,7 +30,14 @@ func (a *Application) botDecision(bot store.Bot) (any, error) {
 	if index, err := a.memory.Index(bot.ID, bot.ID); err == nil && strings.TrimSpace(index) != "" {
 		instructions += "\n\n" + index
 	}
-	return map[string]any{"kind": "managedTools", "service": "local", "codec": "openai-chat.v1", "instructions": instructions, "tools": definitions}, nil
+	// The stream policy shapes streaming response content only; the client's
+	// stream request always governs the transport.
+	heartbeat, showIntermediate, err := a.store.StreamSettings()
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"kind": "managedTools", "service": "local", "codec": "openai-chat.v1", "instructions": instructions, "tools": definitions,
+		"stream": map[string]any{"heartbeat": heartbeat, "show_intermediate": showIntermediate}}, nil
 }
 
 func (a *Application) integration(c config.Config) (*gateway.Registry, *bridge.Service, error) {

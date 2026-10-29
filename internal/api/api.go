@@ -140,11 +140,7 @@ func (a *API) route(w http.ResponseWriter, r *http.Request) {
 	case "memory":
 		a.mem(w, r)
 	case "settings":
-		if r.Method == "GET" {
-			jsonOut(w, 200, map[string]any{"bind_addr": a.o.BindAddr, "memory_root": a.o.MemoryRoot, "retention": "records are retained"})
-		} else {
-			writeErr(w, 405, "method not allowed")
-		}
+		a.settings(w, r)
 	case "events":
 		a.events(w, r)
 	default:
@@ -230,6 +226,43 @@ func decode(w http.ResponseWriter, r *http.Request, v any) bool {
 	}
 	return true
 }
+
+// settings serves the service-level configuration. Streaming options only
+// shape response content; streaming behavior is always governed by the
+// client's request.
+func (a *API) settings(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "GET" && r.Method != "PUT" {
+		writeErr(w, 405, "method not allowed")
+		return
+	}
+	heartbeat, showIntermediate, err := a.s.StreamSettings()
+	if err != nil {
+		writeErr(w, 503, "lookup unavailable")
+		return
+	}
+	if r.Method == "PUT" {
+		var patch struct {
+			StreamHeartbeat        *bool `json:"stream_heartbeat"`
+			StreamShowIntermediate *bool `json:"stream_show_intermediate"`
+		}
+		if !decode(w, r, &patch) {
+			return
+		}
+		if patch.StreamHeartbeat != nil {
+			heartbeat = *patch.StreamHeartbeat
+		}
+		if patch.StreamShowIntermediate != nil {
+			showIntermediate = *patch.StreamShowIntermediate
+		}
+		if err := a.s.SetStreamSettings(heartbeat, showIntermediate); err != nil {
+			writeErr(w, 503, "settings unavailable")
+			return
+		}
+	}
+	jsonOut(w, 200, map[string]any{"bind_addr": a.o.BindAddr, "memory_root": a.o.MemoryRoot, "retention": "records are retained",
+		"stream_heartbeat": heartbeat, "stream_show_intermediate": showIntermediate})
+}
+
 func jsonOut(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)

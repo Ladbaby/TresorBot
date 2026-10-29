@@ -57,8 +57,8 @@ func (s *Store) migrate() error {
 	if err = tx.QueryRow(`SELECT COALESCE(MAX(version),0) FROM schema_migrations`).Scan(&version); err != nil {
 		return err
 	}
-	if version > 7 {
-		return fmt.Errorf("database schema %d is newer than supported version 7", version)
+	if version > 8 {
+		return fmt.Errorf("database schema %d is newer than supported version 8", version)
 	}
 	if version == 0 {
 		for _, q := range schemaV1 {
@@ -131,6 +131,14 @@ func (s *Store) migrate() error {
 			return fmt.Errorf("migration 7: %w", err)
 		}
 		if _, err = tx.Exec(`INSERT INTO schema_migrations VALUES(7)`); err != nil {
+			return err
+		}
+	}
+	if version < 8 {
+		if _, err = tx.Exec(`CREATE TABLE settings(key TEXT PRIMARY KEY,value INTEGER NOT NULL)`); err != nil {
+			return fmt.Errorf("migration 8: %w", err)
+		}
+		if _, err = tx.Exec(`INSERT INTO schema_migrations VALUES(8)`); err != nil {
 			return err
 		}
 	}
