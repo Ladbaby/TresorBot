@@ -235,32 +235,45 @@ func (a *API) settings(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 405, "method not allowed")
 		return
 	}
-	heartbeat, showIntermediate, err := a.s.StreamSettings()
+	cfg, err := a.s.StreamSettings()
 	if err != nil {
 		writeErr(w, 503, "lookup unavailable")
 		return
 	}
 	if r.Method == "PUT" {
 		var patch struct {
-			StreamHeartbeat        *bool `json:"stream_heartbeat"`
-			StreamShowIntermediate *bool `json:"stream_show_intermediate"`
+			StreamHeartbeat        *bool   `json:"stream_heartbeat"`
+			StreamShowIntermediate *bool   `json:"stream_show_intermediate"`
+			StreamActivity         *string `json:"stream_activity"`
 		}
 		if !decode(w, r, &patch) {
 			return
 		}
 		if patch.StreamHeartbeat != nil {
-			heartbeat = *patch.StreamHeartbeat
+			cfg.Heartbeat = *patch.StreamHeartbeat
 		}
 		if patch.StreamShowIntermediate != nil {
-			showIntermediate = *patch.StreamShowIntermediate
+			cfg.ShowIntermediate = *patch.StreamShowIntermediate
 		}
-		if err := a.s.SetStreamSettings(heartbeat, showIntermediate); err != nil {
+		if patch.StreamActivity != nil {
+			text := strings.TrimSpace(*patch.StreamActivity)
+			if text == "" {
+				writeErr(w, 400, "activity text required")
+				return
+			}
+			if len(text) > 200 {
+				writeErr(w, 400, "activity text too long")
+				return
+			}
+			cfg.Activity = text
+		}
+		if err := a.s.SetStreamSettings(cfg); err != nil {
 			writeErr(w, 503, "settings unavailable")
 			return
 		}
 	}
 	jsonOut(w, 200, map[string]any{"bind_addr": a.o.BindAddr, "memory_root": a.o.MemoryRoot, "retention": "records are retained",
-		"stream_heartbeat": heartbeat, "stream_show_intermediate": showIntermediate})
+		"stream_heartbeat": cfg.Heartbeat, "stream_show_intermediate": cfg.ShowIntermediate, "stream_activity": cfg.Activity})
 }
 
 func jsonOut(w http.ResponseWriter, status int, v any) {

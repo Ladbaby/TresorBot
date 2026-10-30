@@ -83,8 +83,8 @@ func (h *Handler) DelegationDefinitions(botID string) ([]map[string]any, error) 
 		return nil, err
 	}
 	definitions := []map[string]any{
-		{"name": "TresorBotContactsList", "description": "List your currently permitted bot contacts and their descriptions.", "parameters": map[string]any{"type": "object", "properties": map[string]any{}, "additionalProperties": false}, "operation": "execute-tool"},
-		{"name": "TresorBotEarthList", "description": "List the Earth machines available to run delegated work.", "parameters": map[string]any{"type": "object", "properties": map[string]any{}, "additionalProperties": false}, "operation": "execute-tool"},
+		{"name": "TresorBotContactsList", "description": "List your currently permitted bot contacts and their descriptions.", "parameters": map[string]any{"type": "object", "properties": map[string]any{}, "additionalProperties": false}, "operation": "execute-tool", "label": "TresorBotContactsList"},
+		{"name": "TresorBotEarthList", "description": "List the Earth machines available to run delegated work.", "parameters": map[string]any{"type": "object", "properties": map[string]any{}, "additionalProperties": false}, "operation": "execute-tool", "label": "TresorBotEarthList"},
 	}
 	if b.IsWorker() {
 		// Worker: no memory, no delegation. It returns a final message to its caller.
@@ -97,7 +97,7 @@ func (h *Handler) DelegationDefinitions(botID string) ([]map[string]any, error) 
 	for _, c := range contacts {
 		targets = append(targets, c.Target)
 	}
-	definitions = append(definitions, map[string]any{"name": "TresorBotSendMessage", "description": "Send a message to a permitted bot and wait for its reply. Use TresorBotContactsList to discover recipients and TresorBotEarthList to choose where the recipient should run. Include only the context you intend to share; do not copy private history.", "parameters": map[string]any{"type": "object", "properties": map[string]any{"target_bot": map[string]any{"type": "string", "enum": targets}, "task": map[string]any{"type": "string", "maxLength": 32768}, "relevant_context": map[string]any{"type": "string", "maxLength": 32768}, "earth": map[string]any{"type": "string", "maxLength": 256, "description": "Optional Earth id or name to run the recipient on. Omit to use the bot's default."}}, "required": []string{"target_bot", "task", "relevant_context"}, "additionalProperties": false}, "operation": "execute-tool"})
+	definitions = append(definitions, map[string]any{"name": "TresorBotSendMessage", "description": "Send a message to a permitted bot and wait for its reply. Use TresorBotContactsList to discover recipients and TresorBotEarthList to choose where the recipient should run. Include only the context you intend to share; do not copy private history.", "parameters": map[string]any{"type": "object", "properties": map[string]any{"target_bot": map[string]any{"type": "string", "enum": targets}, "task": map[string]any{"type": "string", "maxLength": 32768}, "relevant_context": map[string]any{"type": "string", "maxLength": 32768}, "earth": map[string]any{"type": "string", "maxLength": 256, "description": "Optional Earth id or name to run the recipient on. Omit to use the bot's default."}}, "required": []string{"target_bot", "task", "relevant_context"}, "additionalProperties": false}, "operation": "execute-tool", "label": "TresorBotSendMessage"})
 	return definitions, nil
 }
 

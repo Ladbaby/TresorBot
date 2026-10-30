@@ -32,12 +32,14 @@ func (a *Application) botDecision(bot store.Bot) (any, error) {
 	}
 	// The stream policy shapes streaming response content only; the client's
 	// stream request always governs the transport.
-	heartbeat, showIntermediate, err := a.store.StreamSettings()
+	streamCfg, err := a.store.StreamSettings()
 	if err != nil {
 		return nil, err
 	}
+	// Activity is the wording for progress frames; the gateway substitutes
+	// {label}/{tool} with whatever step the bot is on.
 	return map[string]any{"kind": "managedTools", "service": "local", "codec": "openai-chat.v1", "instructions": instructions, "tools": definitions,
-		"stream": map[string]any{"heartbeat": heartbeat, "show_intermediate": showIntermediate}}, nil
+		"stream": map[string]any{"heartbeat": streamCfg.Heartbeat, "show_intermediate": streamCfg.ShowIntermediate, "activity": streamCfg.Activity}}, nil
 }
 
 func (a *Application) integration(c config.Config) (*gateway.Registry, *bridge.Service, error) {

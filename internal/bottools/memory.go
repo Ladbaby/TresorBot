@@ -200,7 +200,8 @@ func (h *Handler) complete(id string, payload any, status int) (any, int, error)
 func Definitions() []map[string]any {
 	scope := map[string]any{"type": "string", "enum": []string{"private", "shared"}}
 	tool := func(name, description string, props map[string]any, required []string) map[string]any {
-		return map[string]any{"name": name, "description": description, "parameters": map[string]any{"type": "object", "properties": props, "required": required, "additionalProperties": false}, "operation": "execute-tool"}
+		// label is what progress lines show while the bot works.
+		return map[string]any{"name": name, "description": description, "parameters": map[string]any{"type": "object", "properties": props, "required": required, "additionalProperties": false}, "operation": "execute-tool", "label": name}
 	}
 	text := func() map[string]any { return map[string]any{"type": "string"} }
 	return []map[string]any{
