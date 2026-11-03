@@ -57,8 +57,8 @@ func (s *Store) migrate() error {
 	if err = tx.QueryRow(`SELECT COALESCE(MAX(version),0) FROM schema_migrations`).Scan(&version); err != nil {
 		return err
 	}
-	if version > 9 {
-		return fmt.Errorf("database schema %d is newer than supported version 9", version)
+	if version > 10 {
+		return fmt.Errorf("database schema %d is newer than supported version 10", version)
 	}
 	if version == 0 {
 		for _, q := range schemaV1 {
@@ -148,6 +148,28 @@ func (s *Store) migrate() error {
 			return fmt.Errorf("migration 9: %w", err)
 		}
 		if _, err = tx.Exec(`INSERT INTO schema_migrations VALUES(9)`); err != nil {
+			return err
+		}
+	}
+	if version < 10 {
+		// Acknowledging a stopped task is not the same decision as confirming
+		// that its side effects are unknown, so the two get distinct markers.
+		// acknowledged_at records the owner having seen it; dismissed_at means
+		// it stays out of the attention view without rewriting its terminal
+		// state or result, which remain the record of what happened.
+		if _, err = tx.Exec(`ALTER TABLE tasks ADD COLUMN acknowledged_at TEXT`); err != nil {
+			return fmt.Errorf("migration 10: %w", err)
+		}
+		if _, err = tx.Exec(`ALTER TABLE tasks ADD COLUMN dismissed_at TEXT`); err != nil {
+			return fmt.Errorf("migration 10: %w", err)
+		}
+		// Reinterpret history: abandoning used to flip the task to 'failed',
+		// which made the owner's own acknowledgement look like a new problem.
+		// Those rows were already reviewed, so carry them over as dismissed.
+		if _, err = tx.Exec(`UPDATE tasks SET dismissed_at=COALESCE(updated_at,CURRENT_TIMESTAMP) WHERE CAST(result AS TEXT) LIKE '%"owner_abandoned"%'`); err != nil {
+			return fmt.Errorf("migration 10: %w", err)
+		}
+		if _, err = tx.Exec(`INSERT INTO schema_migrations VALUES(10)`); err != nil {
 			return err
 		}
 	}

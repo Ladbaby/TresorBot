@@ -421,24 +421,14 @@ func (a *API) tasks(w http.ResponseWriter, r *http.Request, p []string) {
 				writeErr(w, 400, "invalid offset")
 				return
 			}
+			// attention=1 lists only the work an owner may need to act on;
+			// the plain list stays available for automation and inspection.
+			if r.URL.Query().Get("attention") == "1" {
+				v, e := a.s.AttentionTasks(r.URL.Query().Get("bot_id"), lim, off)
+				respond(w, v, e)
+				return
+			}
 			v, e := a.s.ListTasks(r.URL.Query().Get("bot_id"), lim, off)
-			respond(w, v, e)
-			return
-		}
-		if r.Method == "POST" {
-			var q struct {
-				BotID string `json:"bot_id"`
-				Text  string `json:"text"`
-			}
-			if !decode(w, r, &q) {
-				return
-			}
-			if strings.TrimSpace(q.Text) == "" {
-				writeErr(w, 400, "task text is required")
-				return
-			}
-			b, _ := json.Marshal(map[string]string{"text": q.Text})
-			v, _, e := a.s.AdmitTask(q.BotID, "owner", r.Header.Get("Idempotency-Key"), b)
 			respond(w, v, e)
 			return
 		}
@@ -460,6 +450,16 @@ func (a *API) tasks(w http.ResponseWriter, r *http.Request, p []string) {
 		respond(w, v, e)
 		return
 	}
+	if len(p) == 3 && p[2] == "acknowledge" && r.Method == "POST" {
+		e := a.s.AcknowledgeTask(p[1])
+		respond(w, map[string]bool{"ok": true}, e)
+		return
+	}
+	if len(p) == 3 && p[2] == "dismiss" && r.Method == "POST" {
+		e := a.s.DismissTask(p[1])
+		respond(w, map[string]bool{"ok": true}, e)
+		return
+	}
 	if len(p) == 3 && p[2] == "abandon" && r.Method == "POST" {
 		var q struct {
 			Confirmed bool `json:"confirmed"`
@@ -471,7 +471,7 @@ func (a *API) tasks(w http.ResponseWriter, r *http.Request, p []string) {
 		respond(w, map[string]bool{"ok": true}, e)
 		return
 	}
-	if len(p) <= 2 || (len(p) == 3 && (p[2] == "retry" || p[2] == "abandon")) {
+	if len(p) <= 2 || (len(p) == 3 && (p[2] == "retry" || p[2] == "abandon" || p[2] == "acknowledge" || p[2] == "dismiss")) {
 		writeErr(w, 405, "method not allowed")
 		return
 	}

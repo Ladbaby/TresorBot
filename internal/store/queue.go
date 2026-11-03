@@ -45,40 +45,10 @@ func (s *Store) ListRunners() ([]Runner, error) {
 	}
 	return out, rows.Err()
 }
+
+// ListTasks lists recent work for a bot (or all bots when botID is empty).
 func (s *Store) ListTasks(botID string, limit, offset int) ([]Task, error) {
-	if limit == 0 {
-		limit = 100
-	}
-	if limit < 1 || limit > 500 || offset < 0 {
-		return nil, ErrInvalid
-	}
-	rows, e := s.db.Query(`SELECT id FROM tasks WHERE (?='' OR bot_id=?) ORDER BY rowid DESC LIMIT ? OFFSET ?`, botID, botID, limit, offset)
-	if e != nil {
-		return nil, e
-	}
-	ids := []string{}
-	for rows.Next() {
-		var id string
-		if e = rows.Scan(&id); e != nil {
-			rows.Close()
-			return nil, e
-		}
-		ids = append(ids, id)
-	}
-	e = rows.Err()
-	rows.Close()
-	if e != nil {
-		return nil, e
-	}
-	out := []Task{}
-	for _, id := range ids {
-		t, e := s.GetTask(id)
-		if e != nil {
-			return nil, e
-		}
-		out = append(out, t)
-	}
-	return out, nil
+	return s.ListTasksFiltered(TaskFilter{BotID: botID, Limit: limit, Offset: offset})
 }
 
 type OwnerEvent struct {
@@ -128,6 +98,47 @@ func (s *Store) RetryTask(id string) (Task, error) {
 	n, _, e := s.AdmitTask(t.BotID, "owner", "", t.Input)
 	return n, e
 }
+
+// AcknowledgeTask records that the owner has seen a stopped task without
+// changing the outcome it already reached. The task stays visible so an
+// interruption that may have left changes behind is not silently lost.
+func (s *Store) AcknowledgeTask(id string) error {
+	return s.markTask(id, "acknowledged_at", true)
+}
+
+// DismissTask takes a stopped task out of the attention view. It does not
+// rewrite the terminal state or the result: those remain the record of what
+// happened, including whether side effects were left behind.
+func (s *Store) DismissTask(id string) error {
+	return s.markTask(id, "dismissed_at", false)
+}
+
+func (s *Store) markTask(id, column string, onlyUnacknowledged bool) error {
+	tx, e := s.db.Begin()
+	if e != nil {
+		return e
+	}
+	defer tx.Rollback()
+	t, e := getTask(tx, id)
+	if e != nil {
+		return e
+	}
+	// Only stopped work can be acknowledged or dismissed; live work is handled
+	// by cancel, and finished work is not an exception.
+	if t.State != "failed" && t.State != "needs_attention" && t.State != "cancelling" {
+		return ErrConflict
+	}
+	// column is a fixed identifier chosen by the callers above, never input.
+	q := `UPDATE tasks SET ` + column + `=CURRENT_TIMESTAMP WHERE id=?`
+	if onlyUnacknowledged {
+		q += ` AND acknowledged_at IS NULL`
+	}
+	if _, e = tx.Exec(q, id); e != nil {
+		return e
+	}
+	return tx.Commit()
+}
+
 func (s *Store) AbandonTask(id string, confirmed bool) error {
 	if !confirmed {
 		return ErrInvalid

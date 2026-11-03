@@ -22,6 +22,15 @@ type Task struct {
 	// TargetRunnerID optionally pins where the task runs (SendToEarth). Empty
 	// means the bot's configured default runner decides, as before.
 	TargetRunnerID string
+	// Summary, BotName and UpdatedAt are read-time context for the owner
+	// dashboard, not handled columns: Summary is the request in one line,
+	// BotName is how the running bot is labelled, and UpdatedAt is when the
+	// work last changed. Listing and lookup reads populate them.
+	Summary        string
+	BotName        string
+	UpdatedAt      string
+	AcknowledgedAt string
+	DismissedAt    string
 }
 type Assignment struct {
 	ID, TaskID, RunnerID, ExecutionID string
@@ -116,7 +125,13 @@ func getTask(q querier, id string) (Task, error) {
 	}
 	return t, err
 }
-func (s *Store) GetTask(id string) (Task, error) { return getTask(s.db, id) }
+func (s *Store) GetTask(id string) (Task, error) {
+	t, err := getTask(s.db, id)
+	if err != nil {
+		return t, err
+	}
+	return t, s.describe(&t)
+}
 func (s *Store) ClaimTask(id, runner string) (Assignment, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
