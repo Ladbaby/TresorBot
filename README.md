@@ -185,11 +185,11 @@ In your chat client, select `bot/personal` through Tresor. Text messages and sup
 - **Contacts:** add permitted recipients in a bot's Contacts section. Permission is one-way; a reply does not require the reverse contact.
 - **Messages:** `TresorBotContactsList` discovers recipients; `TresorBotSendMessage` sends to a bot and waits for its reply. Each message starts fresh work for the recipient. Ongoing chats, group channels and external app forwarding are not available yet.
 - **Memory:** bots can list, read and save their private Markdown. Shared memory is readable by bots; shared writes require the bot's permission checkbox. In the dashboard, choose a scope and save explicitly. A conflicting edit keeps your draft instead of overwriting it.
-- **Tasks:** queue work, view results or cancel from the Tasks tab. Closing a chat does not cancel its work. Cancelling a sender also cancels work it started in other bots; completed file changes are not undone.
+- **Needs attention:** work starts by talking to a bot, so the dashboard reports only what did not finish. Closing a chat does not cancel its work. Cancelling a sender also cancels work it started in other bots; completed file changes are not undone.
 
 ## If work is interrupted
 
-Reconnect Earth and inspect the task in Sun. Disconnection does not mean work stopped. A task needing attention keeps its place until you resolve it.
+Reconnect Earth and open **Needs attention** in Sun. Acknowledge it if you want to keep it in view, or dismiss it once you have dealt with it.
 
 Before choosing **Abandon**, confirm the old work and any programs it started have stopped. **Retry** starts new work and may repeat earlier actions. Never retry uncertain work blindly. Revoking a runner blocks its connection but does not prove its programs stopped.
 
