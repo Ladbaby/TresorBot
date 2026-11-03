@@ -20,7 +20,7 @@ import (
 // guidance plus the TresorBot tool surface. The downstream model answers; the
 // tools give it access to the bot's memory and contacts. Used for both direct
 // chat and a Pi-driven task, so the downstream model sees the same brain.
-func (a *Application) botDecision(bot store.Bot) (any, error) {
+func (a *Application) botDecision(bot store.Bot, clientFormat string) (any, error) {
 	delegation, err := a.bottools.DelegationDefinitions(bot.ID)
 	if err != nil {
 		return nil, err
@@ -38,7 +38,10 @@ func (a *Application) botDecision(bot store.Bot) (any, error) {
 	}
 	// Activity is the wording for progress frames; the gateway substitutes
 	// {label}/{tool} with whatever step the bot is on.
-	return map[string]any{"kind": "managedTools", "service": "local", "codec": "openai-chat.v1", "instructions": instructions, "tools": definitions,
+	// The codec names the wire format the client actually spoke: the gateway
+	// validates it against the route it is serving, so announcing chat for an
+	// anthropic or gemini client would be rejected outright.
+	return map[string]any{"kind": "managedTools", "service": "local", "codec": codecForClientFormat(clientFormat), "instructions": instructions, "tools": definitions,
 		"stream": map[string]any{"heartbeat": streamCfg.Heartbeat, "show_intermediate": streamCfg.ShowIntermediate, "activity": streamCfg.Activity}}, nil
 }
 
@@ -60,17 +63,26 @@ func (a *Application) integration(c config.Config) (*gateway.Registry, *bridge.S
 		return body, input.Stream, nil
 	}
 	service, err := bridge.New(bridge.Options{Token: c.IntegrationToken, ResolveBinding: registry.ResolveBinding, Store: a.store,
-		ValidateChat: func(raw json.RawMessage, alias string) error { _, e := chatinput.Parse(raw, alias); return e },
-		Invoke:       bridge.ChatInvoker(a.store, func() { a.dispatch.Wake() }, parse),
+		ValidateChat: func(raw json.RawMessage, alias, format string) error {
+			// The bot only reads a chat-shaped body. Every other format is served
+			// by the gateway's codec, which already decoded and validated it, so
+			// the bot's own reader must not reject a body it never sees.
+			if format != "openai" {
+				return nil
+			}
+			_, e := chatinput.Parse(raw, alias)
+			return e
+		},
+		Invoke: bridge.ChatInvoker(a.store, func() { a.dispatch.Wake() }, parse),
 		Managed: func(input bridge.Input, bot store.Bot) (any, error) {
 			// No execution authority to verify: the bot is identified by the
 			// requested alias resolved in the bridge. Supply its tools and memory.
-			return a.botDecision(bot)
+			return a.botDecision(bot, input.Routing.ClientFormat)
 		},
-		ChatDecision: func(bot store.Bot, bindingID string) (any, error) {
+		ChatDecision: func(bot store.Bot, bindingID, clientFormat string) (any, error) {
 			// Direct chat: the resolved downstream model answers with the bot's
 			// memory and tools attached. No Earth Pi session substitutes it.
-			return a.botDecision(bot)
+			return a.botDecision(bot, clientFormat)
 		},
 		Tools: func(w http.ResponseWriter, r *http.Request, raw json.RawMessage) {
 			reply := func(status int, payload any) {
@@ -173,4 +185,19 @@ func (a *Application) authorizeGateway(registry *gateway.Registry) func(context.
 		}
 		return &runnertransport.GatewayScope{URL: g.URL, Capability: g.Capability, ExecutionID: g.ExecutionID, AssignmentID: g.AssignmentID, Epoch: g.Epoch, Alias: g.Alias}, nil
 	}
+}
+
+// codecForClientFormat names the gateway codec serving a client protocol. An
+// unknown format falls back to chat, which the gateway then rejects explicitly
+// rather than this service guessing at a wire contract.
+func codecForClientFormat(format string) string {
+	switch format {
+	case "anthropic":
+		return "anthropic-messages.v1"
+	case "openai_responses":
+		return "openai-responses.v1"
+	case "gemini":
+		return "gemini-generate-content.v1"
+	}
+	return "openai-chat.v1"
 }

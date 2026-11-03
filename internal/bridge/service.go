@@ -33,6 +33,10 @@ type Input struct {
 			ID     string `json:"id"`
 			Format string `json:"format"`
 		} `json:"downstream"`
+		// ClientFormat is the protocol the client spoke. It differs from the
+		// downstream format whenever the gateway translates, and it is what
+		// decides how this request may be read.
+		ClientFormat string `json:"clientFormat"`
 	} `json:"routing"`
 	Context   json.RawMessage `json:"context,omitempty"`
 	Execution *HookExecution  `json:"execution"`
@@ -45,14 +49,14 @@ type Options struct {
 	ResolveBinding   func(context.Context) (string, error)
 	Store            *store.Store
 	// Managed validates registered authority and returns the managed-tools decision.
-	Managed      func(Input, store.Bot) (any, error)
+	Managed func(Input, store.Bot) (any, error)
 	// ChatDecision builds the managed-tools decision for a direct client chat:
 	// the resolved downstream answers with the bot's memory + tools attached,
 	// without substituting an Earth Pi session. It receives the request binding
 	// so tool calls can be scoped to this chat's execution.
-	ChatDecision func(bot store.Bot, bindingID string) (any, error)
+	ChatDecision func(bot store.Bot, bindingID, clientFormat string) (any, error)
 	Invoke       func(http.ResponseWriter, *http.Request, Input, store.Bot)
-	ValidateChat func(json.RawMessage, string) error
+	ValidateChat func(raw json.RawMessage, alias, format string) error
 	Tools        func(http.ResponseWriter, *http.Request, json.RawMessage)
 }
 type Service struct{ o Options }
@@ -164,10 +168,6 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		output(w, 200, map[string]any{"decision": map[string]string{"kind": "pass"}})
 		return
 	}
-	if input.Routing.Downstream.Format != "openai" {
-		fail(w, 409, "unsupported_bot_downstream")
-		return
-	}
 	if !bot.Enabled {
 		fail(w, 409, "bot_disabled")
 		return
@@ -196,12 +196,21 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		Path   string `json:"path"`
 		Query  string `json:"query"`
 	}
-	if json.Unmarshal(input.Request, &metadata) != nil || metadata.Method != "POST" || (metadata.Path != "/v1/chat/completions" && metadata.Path != "/chat/completions") || metadata.Query != "" {
+	if json.Unmarshal(input.Request, &metadata) != nil || metadata.Method != "POST" {
+		fail(w, 400, "unsupported_chat_route")
+		return
+	}
+	// The gateway translates between client and downstream formats, so a bot is
+	// reachable from any protocol it serves. What the bot must not do is answer a
+	// request it cannot read, so the client's own format is checked rather than
+	// the downstream's.
+	clientFormat := input.Routing.ClientFormat
+	if !supportedClientFormat(clientFormat) || !formatServesPath(clientFormat, metadata.Path) {
 		fail(w, 400, "unsupported_chat_route")
 		return
 	}
 	if s.o.ValidateChat != nil {
-		if err := s.o.ValidateChat(input.Body, bot.Alias); err != nil {
+		if err := s.o.ValidateChat(input.Body, bot.Alias, clientFormat); err != nil {
 			fail(w, 400, "unsupported_chat_request")
 			return
 		}
@@ -213,7 +222,7 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			fail(w, 503, "integration_unavailable")
 			return
 		}
-		decision, derr := s.o.ChatDecision(*bot, input.BindingID)
+		decision, derr := s.o.ChatDecision(*bot, input.BindingID, clientFormat)
 		if derr != nil {
 			fail(w, 503, "integration_unavailable")
 			return
@@ -224,4 +233,34 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// The historical whole-request substitution path is retired: a direct chat
 	// is never replaced by a bot task's output here.
 	fail(w, 409, "chat_intercept_retired")
+}
+
+// supportedClientFormat reports whether a bot can answer a request from this
+// client protocol. The gateway owns the wire formats; this list only states
+// which of them a bot chat is served on.
+func supportedClientFormat(format string) bool {
+	switch format {
+	case "openai", "anthropic", "openai_responses", "gemini":
+		return true
+	}
+	return false
+}
+
+// formatServesPath reports whether a path is the route this client format
+// arrives on, so a request whose body and path disagree is refused rather than
+// misread. Gemini puts the action in the path, so its routes are matched by
+// prefix and action suffix rather than as a single literal.
+func formatServesPath(format, path string) bool {
+	switch format {
+	case "openai":
+		return path == "/v1/chat/completions" || path == "/chat/completions"
+	case "anthropic":
+		return path == "/v1/messages"
+	case "openai_responses":
+		return path == "/v1/responses"
+	case "gemini":
+		return strings.HasPrefix(path, "/v1beta/models/") &&
+			(strings.HasSuffix(path, ":generateContent") || strings.HasSuffix(path, ":streamGenerateContent"))
+	}
+	return false
 }
