@@ -240,7 +240,12 @@ func npmInstall(ctx context.Context, dir string, packages []string) error {
 	}
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
 	defer cancel()
-	args := append([]string{"install", "--omit=dev", "--no-audit", "--no-fund"}, packages...)
+	// --prefix is required, not cosmetic: npm resolves the install root by
+	// walking up from the working directory to the nearest package.json,
+	// node_modules or .git. An adapter directory under a home directory that
+	// happens to be a git repo therefore installs into that repo instead of
+	// beside the adapter.
+	args := append([]string{"install", "--prefix", dir, "--omit=dev", "--no-audit", "--no-fund"}, packages...)
 	cmd := exec.CommandContext(ctx, npm, args...)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "npm_config_yes=true")

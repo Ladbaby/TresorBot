@@ -33,6 +33,10 @@ type Options struct {
 	// Adapters reports the agent adapters this Earth can run. It is a callback
 	// because the catalogue is discovered from disk and can change on reload.
 	Adapters func(context.Context) ([]contracts.RunnerAdapter, error)
+	// Logf records why an execution failed. Without it an operator only sees
+	// the opaque execution_unavailable terminal and cannot tell a missing
+	// adapter from a broken workspace.
+	Logf func(string, ...any)
 }
 type worker struct {
 	cancel context.CancelFunc
@@ -46,6 +50,12 @@ type Client struct {
 	wake    chan struct{}
 	refresh chan struct{}
 	wg      sync.WaitGroup
+}
+
+func (c *Client) logf(format string, args ...any) {
+	if c.o.Logf != nil {
+		c.o.Logf(format, args...)
+	}
 }
 
 func New(o Options) (*Client, error) {
@@ -452,6 +462,9 @@ func (c *Client) launch(ctx context.Context, a contracts.Assign) error {
 		if result.Cancelled {
 			terminal.State = contracts.Cancelled
 		} else if e != nil || !result.Completed {
+			// The terminal stays deliberately opaque, so the cause has to reach
+			// the local log or the operator has nothing to act on.
+			c.logf("execution %s failed: %v", a.AssignmentID, e)
 			terminal.State = contracts.Failed
 			terminal.Error = &contracts.Error{Code: "execution_unavailable", Message: "Execution could not complete; inspect Earth configuration and authorization"}
 		} else {

@@ -110,7 +110,7 @@ func run(a []string) error {
 	}
 	defer gateway.Close()
 	settings := &settingsState{cfg: cfg, connection: "disconnected", adapters: pool, tools: gateway}
-	client, e := earth.New(earth.Options{SunURL: cfg.SunURL, RunnerID: cfg.RunnerID, Token: cfg.RunnerToken, Journal: journal, Executor: settings, DefaultWorkspace: settings.workspace, ConnectionChanged: settings.connectionChanged, ValidateRuntime: settings.validateRuntime, Adapters: settings.advertisedAdapters})
+	client, e := earth.New(earth.Options{SunURL: cfg.SunURL, RunnerID: cfg.RunnerID, Token: cfg.RunnerToken, Journal: journal, Executor: settings, DefaultWorkspace: settings.workspace, ConnectionChanged: settings.connectionChanged, ValidateRuntime: settings.validateRuntime, Adapters: settings.advertisedAdapters, Logf: log.Printf})
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	results := make(chan error, 2)

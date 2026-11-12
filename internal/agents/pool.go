@@ -238,7 +238,7 @@ func (p *Pool) Execute(ctx context.Context, req ExecuteRequest, progress func(ag
 	// Announce the session before prompting, so a crash between open and prompt
 	// is still attributable to this assignment.
 	if started != nil {
-		if err = started(0, opened.SessionRef); err != nil {
+		if err = started(target.Pid(), opened.SessionRef); err != nil {
 			target.Close(context.Background(), sessionID)
 			return result, err
 		}

@@ -83,6 +83,18 @@ func NewHost(cfg HostConfig) (*Host, error) {
 	return &Host{cfg: cfg, sessions: map[string]struct{}{}}, nil
 }
 
+// Pid reports the host process id, which is the process evidence recorded for
+// an assignment. Sessions are multiplexed inside this one process, so the pid
+// identifies the host rather than a per-assignment child.
+func (h *Host) Pid() int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.cmd == nil || h.cmd.Process == nil {
+		return 0
+	}
+	return h.cmd.Process.Pid
+}
+
 // Adapters reports the host's catalogue. It performs the handshake if needed.
 func (h *Host) Adapters(ctx context.Context) ([]AdapterInfo, error) {
 	if err := h.ensure(ctx); err != nil {
