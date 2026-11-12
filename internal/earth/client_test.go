@@ -7,23 +7,23 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+	"tresorbot/internal/agent"
 	"tresorbot/internal/config"
 	"tresorbot/internal/contracts"
 	"tresorbot/internal/earth"
 	"tresorbot/internal/earthjournal"
-	"tresorbot/internal/piadapter"
 	"tresorbot/internal/store"
 	"tresorbot/internal/sun"
 )
 
 type uncertainExecutor struct{ calls chan string }
 
-func (e *uncertainExecutor) Execute(ctx context.Context, a contracts.Assign, started func(int, string) error, progress func(piadapter.Progress)) (piadapter.Result, error) {
+func (e *uncertainExecutor) Execute(ctx context.Context, a contracts.Assign, started func(int, string) error, progress func(agent.Progress)) (agent.Result, error) {
 	e.calls <- a.AssignmentID
 	if err := started(123, a.AssignmentID); err != nil {
-		return piadapter.Result{}, err
+		return agent.Result{}, err
 	}
-	return piadapter.Result{}, context.DeadlineExceeded
+	return agent.Result{}, context.DeadlineExceeded
 }
 
 func TestStartedExecutorErrorJournalsNonterminalUncertainty(t *testing.T) {
@@ -132,12 +132,12 @@ func TestStartedExecutorErrorJournalsNonterminalUncertainty(t *testing.T) {
 
 type completingExecutor struct{ calls chan string }
 
-func (e *completingExecutor) Execute(ctx context.Context, a contracts.Assign, started func(int, string) error, progress func(piadapter.Progress)) (piadapter.Result, error) {
+func (e *completingExecutor) Execute(ctx context.Context, a contracts.Assign, started func(int, string) error, progress func(agent.Progress)) (agent.Result, error) {
 	e.calls <- a.AssignmentID
 	if err := started(123, a.AssignmentID); err != nil {
-		return piadapter.Result{}, err
+		return agent.Result{}, err
 	}
-	return piadapter.Result{Text: "test result", Completed: true, ProcessExited: true}, nil
+	return agent.Result{Text: "test result", Completed: true, ProcessExited: true}, nil
 }
 func TestOutboundRunnerDispatchesAndPersistsTerminalResult(t *testing.T) {
 	dir := t.TempDir()

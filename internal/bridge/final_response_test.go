@@ -38,7 +38,7 @@ func TestFinalChatJSONAndSSEHideTaskInternals(t *testing.T) {
 			if e = st.Accept(a); e != nil {
 				t.Fatal(e)
 			}
-			if e = st.RecordEvent(store.Report{AssignmentID: a.ID, RunnerID: runner, Epoch: a.Epoch, EventID: uuid.NewString(), Sequence: 1, Kind: "terminal", Payload: json.RawMessage(`{"state":"completed","result":{"text":"Final answer","usage":{"input":10,"output":7,"cacheRead":80,"cacheWrite":5}}}`)}); e != nil {
+			if e = st.RecordEvent(store.Report{AssignmentID: a.ID, RunnerID: runner, Epoch: a.Epoch, EventID: uuid.NewString(), Sequence: 1, Kind: "terminal", Payload: json.RawMessage(`{"state":"completed","result":{"text":"Final answer","usage":{"input":10,"output":7,"cache_read":80,"cache_write":5}}}`)}); e != nil {
 				t.Fatal(e)
 			}
 			invoke := ChatInvoker(st, nil, func(json.RawMessage, string) (json.RawMessage, bool, error) { return body, stream, nil })

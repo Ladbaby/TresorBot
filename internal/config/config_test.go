@@ -78,3 +78,62 @@ func TestInvalidConfig(t *testing.T) {
 		})
 	}
 }
+
+// An existing earth.yaml must keep working after the agents block replaced the
+// flat Pi keys. This is the compatibility promise: no operator should have to
+// edit a working configuration to upgrade.
+// Flat Pi keys are obsolete: adapter settings live beside the installed adapter.
+// They must still load without error so an existing earth.yaml keeps starting,
+// but they must be flagged so Earth can tell the operator where they went.
+func TestLegacyPiKeysAreFlaggedButIgnored(t *testing.T) {
+	c, err := loadText(t, "earth", `
+sun_url: http://127.0.0.1:11520
+runner_id: 11111111-1111-4111-8111-111111111111
+state_dir: state
+node_path: /usr/bin/node
+pi_cli_path: /opt/pi/dist/cli.js
+pi_tools: [read, bash]
+`)
+	if err != nil {
+		t.Fatalf("legacy keys must not break loading: %v", err)
+	}
+	if !c.LegacyAgents {
+		t.Error("legacy keys were not flagged, so no migration notice is logged")
+	}
+}
+
+// An earth.yaml with no agent keys at all is the normal case now: adapters are
+// installed separately and carry their own configuration.
+func TestNoAgentKeysNeeded(t *testing.T) {
+	c, err := loadText(t, "earth", `
+sun_url: http://127.0.0.1:11520
+runner_id: 11111111-1111-4111-8111-111111111111
+runner_token: token
+state_dir: state
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.LegacyAgents {
+		t.Error("LegacyAgents set without legacy keys")
+	}
+	if err := c.ValidateEarthRuntime(); err != nil {
+		t.Errorf("a minimal Earth config must be runnable: %v", err)
+	}
+}
+
+// The agents directory is fixed, so two Earth processes on one machine share an
+// adapter catalogue rather than each inventing one.
+func TestAgentsDirIsStable(t *testing.T) {
+	dir, err := AgentsDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dir != filepath.Join(home, ".tresorbot", "agents") {
+		t.Errorf("agents dir = %q", dir)
+	}
+}

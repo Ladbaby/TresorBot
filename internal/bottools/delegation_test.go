@@ -32,7 +32,7 @@ func testDelegationReattaches(t *testing.T, native bool) {
 	}
 	runner, err := s.CreateRunner("earth")
 	must(err)
-	must(s.UpdateRunnerMetadata(runner, t.TempDir(), "test"))
+	must(s.UpdateRunnerMetadata(runner, t.TempDir(), "test", ""))
 	parent, err := s.CreateBot(store.Bot{Alias: "bot/parent", Name: "Parent", Enabled: true, RunnerID: runner})
 	must(err)
 	specialist, err := s.CreateBot(store.Bot{Alias: "bot/specialist", Name: "Specialist", Enabled: true, RunnerID: runner, Instructions: "PRIVATE"})
@@ -200,7 +200,7 @@ func TestDirectChatSendMessageAdmitsChildAndReturnsReply(t *testing.T) {
 	}
 	runner, err := s.CreateRunner("earth")
 	must(err)
-	must(s.UpdateRunnerMetadata(runner, t.TempDir(), "test"))
+	must(s.UpdateRunnerMetadata(runner, t.TempDir(), "test", ""))
 	me, err := s.CreateBot(store.Bot{Alias: "bot/personal", Name: "Personal", Enabled: true, RunnerID: runner})
 	must(err)
 	worker, err := s.CreateBot(store.Bot{Alias: "bot/worker", Name: "Worker", Enabled: true, Kind: store.Worker, RunnerID: runner})
@@ -262,7 +262,7 @@ func TestDirectChatSecondSendMessageInSameExecutionSucceeds(t *testing.T) {
 	}
 	runner, err := s.CreateRunner("earth")
 	must(err)
-	must(s.UpdateRunnerMetadata(runner, t.TempDir(), "test"))
+	must(s.UpdateRunnerMetadata(runner, t.TempDir(), "test", ""))
 	me, err := s.CreateBot(store.Bot{Alias: "bot/personal", Name: "Personal", Enabled: true, RunnerID: runner})
 	must(err)
 	worker, err := s.CreateBot(store.Bot{Alias: "bot/worker", Name: "Worker", Enabled: true, Kind: store.Worker, RunnerID: runner})
