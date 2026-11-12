@@ -57,8 +57,8 @@ func (s *Store) migrate() error {
 	if err = tx.QueryRow(`SELECT COALESCE(MAX(version),0) FROM schema_migrations`).Scan(&version); err != nil {
 		return err
 	}
-	if version > 10 {
-		return fmt.Errorf("database schema %d is newer than supported version 10", version)
+	if version > 11 {
+		return fmt.Errorf("database schema %d is newer than supported version 11", version)
 	}
 	if version == 0 {
 		for _, q := range schemaV1 {
@@ -170,6 +170,28 @@ func (s *Store) migrate() error {
 			return fmt.Errorf("migration 10: %w", err)
 		}
 		if _, err = tx.Exec(`INSERT INTO schema_migrations VALUES(10)`); err != nil {
+			return err
+		}
+	}
+	if version < 11 {
+		// A bot's parallel width becomes data instead of a hardcoded one. The
+		// one_bot_slot index cannot express "up to N", so concurrency is enforced
+		// in claimTask against this column; the index is dropped.
+		if _, err = tx.Exec(`ALTER TABLE bots ADD COLUMN max_concurrency INTEGER NOT NULL DEFAULT 1`); err != nil {
+			return fmt.Errorf("migration 11: %w", err)
+		}
+		// Adapters are discovered on Earth, so Sun records what each runner
+		// actually offers rather than assuming a single built-in.
+		if _, err = tx.Exec(`ALTER TABLE runners ADD COLUMN adapters TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("migration 11: %w", err)
+		}
+		if _, err = tx.Exec(`DROP INDEX IF EXISTS one_bot_slot`); err != nil {
+			return fmt.Errorf("migration 11: %w", err)
+		}
+		if _, err = tx.Exec(`UPDATE bots SET max_concurrency=? WHERE kind=?`, WorkerDefaultConcurrency, Worker); err != nil {
+			return fmt.Errorf("migration 11: %w", err)
+		}
+		if _, err = tx.Exec(`INSERT INTO schema_migrations VALUES(11)`); err != nil {
 			return err
 		}
 	}

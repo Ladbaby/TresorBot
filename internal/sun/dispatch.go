@@ -121,6 +121,16 @@ func (d *dispatchLoop) pass(ctx context.Context) {
 		if !b.Enabled || b.RunnerID == "" {
 			continue
 		}
-		_, _ = s.DispatchNext(ctx, b.ID, b.RunnerID)
+		// A bot may run several tasks at once (the Worker runs hundreds), so keep
+		// claiming while it has room. ErrConflict is the stop condition: the bot is
+		// at its max_concurrency, so further passes cannot help.
+		for {
+			if ctx.Err() != nil {
+				return
+			}
+			if _, err := s.DispatchNext(ctx, b.ID, b.RunnerID); err != nil {
+				break
+			}
+		}
 	}
 }

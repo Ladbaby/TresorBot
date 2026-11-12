@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"gopkg.in/yaml.v3"
@@ -53,14 +54,11 @@ func (c Config) ValidateEarthRuntime() error {
 	if strings.TrimSpace(c.RunnerToken) == "" {
 		return fmt.Errorf("Earth requires runner_token; issue a credential from Sun's Earth tab")
 	}
+	// Adapter settings (including the pi CLI path) live beside the installed
+	// adapter, so Earth validates only what it needs to run itself. A missing or
+	// broken adapter is reported by the host when a bot using it is dispatched.
 	if c.PiCLIPath != "" && c.PiPath != "" {
 		return fmt.Errorf("choose pi_path or pi_cli_path, not both")
-	}
-	if c.PiCLIPath != "" {
-		info, err := os.Stat(c.PiCLIPath)
-		if err != nil || !info.Mode().IsRegular() {
-			return fmt.Errorf("pi_cli_path must identify an installed Pi CLI file")
-		}
 	}
 	return nil
 }
@@ -85,7 +83,35 @@ type Config struct {
 	GatewayURL          string   `yaml:"gateway_url"`
 	GatewayBindingID    string   `yaml:"gateway_binding_id"` // Deprecated: accepted for old YAML; resolved IDs are never taken from this field.
 	GatewayControlToken string   `yaml:"gateway_control_token"`
+
+	// LegacyAgents reports that flat node_path/pi_path/pi_cli_path/pi_tools keys
+	// were present. They are now ignored: adapter settings live beside the
+	// adapter. Earth logs one diagnostic pointing at `agent install`.
+	LegacyAgents bool `yaml:"-"`
 }
+
+// AgentsDir is where installed adapters live. It is not configurable: adapters
+// are installed with `tresorbot-earth agent install`, which needs one place to
+// put them, and a per-file override would only make that harder to reason about.
+func AgentsDir() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve agents directory: %w", err)
+	}
+	return filepath.Join(home, ".tresorbot", "agents"), nil
+}
+
+const (
+	// AgentsHosts is the number of host processes Earth runs. One is enough for a
+	// 500-session Worker fleet (measured ~411 MB); more trade memory for crash
+	// isolation, which is not worth it at the current ceiling.
+	AgentsHosts = 1
+	// AgentsMaxSessions allows a 500-wide Worker fleet plus headroom.
+	AgentsMaxSessions = 600
+	// AgentsCancelTimeout leaves room for a provider to unwind a tool call before
+	// the host is killed and its sessions are reported uncertified.
+	AgentsCancelTimeout = 30 * time.Second
+)
 
 func (c Config) ValidateIntegration() error {
 	configured := c.IntegrationToken != "" || c.GatewayURL != "" || c.GatewayControlToken != ""
@@ -205,6 +231,12 @@ func Load(path, role string) (Config, error) {
 				return Config{}, fmt.Errorf("non-loopback Earth bind_addr requires admin_password")
 			}
 		}
+		// Flat Pi keys are obsolete: an adapter's settings live in its own
+		// config.json beside the installed adapter. Their presence is still
+		// reported so an operator knows to move them and re-install.
+		if c.NodePath != "" || c.PiCLIPath != "" || c.PiPath != "" || len(c.PiTools) > 0 {
+			c.LegacyAgents = true
+		}
 		for _, p := range []*string{&c.NodePath, &c.PiCLIPath, &c.PiPath} {
 			if strings.ContainsAny(*p, "\r\n\x00") {
 				return Config{}, fmt.Errorf("invalid runtime path")
@@ -237,6 +269,7 @@ func Load(path, role string) (Config, error) {
 		if !filepath.IsAbs(c.StateDir) {
 			c.StateDir = filepath.Join(filepath.Dir(path), c.StateDir)
 		}
+
 	}
 	return c, nil
 }

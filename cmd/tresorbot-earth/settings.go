@@ -7,11 +7,12 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"tresorbot/internal/agent"
+	"tresorbot/internal/agents"
 	"tresorbot/internal/config"
 	"tresorbot/internal/contracts"
 	"tresorbot/internal/earth"
 	"tresorbot/internal/earthexec"
-	"tresorbot/internal/piadapter"
 	"tresorbot/internal/runnertransport"
 )
 
@@ -22,9 +23,22 @@ type settingsState struct {
 	connected  bool
 	connection string
 	client     *earth.Client
+	// adapters is shared by every snapshot: the pool owns processes, while each
+	// snapshot freezes the configuration a turn runs with.
+	adapters *agents.Pool
+	// tools is the one loopback gateway for this Earth.
+	tools *earthexec.ToolGateway
 }
 
 func (s *settingsState) snapshot() config.Config { s.mu.RLock(); defer s.mu.RUnlock(); return s.cfg }
+
+// pool returns the shared adapter runtime.
+func (s *settingsState) pool() *agents.Pool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.adapters
+}
+
 func (s *settingsState) workspace() string {
 	c := s.snapshot()
 	if !filepath.IsAbs(c.DefaultWorkspace) {
@@ -42,23 +56,57 @@ func (s *settingsState) connectionChanged(connected bool, state string) {
 	s.connected = connected
 	s.connection = state
 }
-func (s *settingsState) SnapshotExecutor() earth.Executor { return &settingsState{cfg: s.snapshot()} }
-func (s *settingsState) Execute(ctx context.Context, a contracts.Assign, progress func(int, string) error, started func(piadapter.Progress)) (piadapter.Result, error) {
+func (s *settingsState) SnapshotExecutor() earth.Executor {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return &settingsState{cfg: s.cfg, adapters: s.adapters, tools: s.tools}
+}
+func (s *settingsState) Execute(ctx context.Context, a contracts.Assign, progress func(int, string) error, started func(agent.Progress)) (agent.Result, error) {
 	c := s.snapshot()
 	if err := c.ValidateEarthRuntime(); err != nil {
-		return piadapter.Result{}, err
+		return agent.Result{}, err
 	}
 	var input runnertransport.ExecutionInput
 	var bot struct {
 		Workspace string `json:"workspace"`
 	}
 	if json.Unmarshal(a.Input, &input) != nil || json.Unmarshal(input.Snapshot, &bot) != nil {
-		return piadapter.Result{}, errors.New("invalid execution workspace snapshot")
+		return agent.Result{}, errors.New("invalid execution workspace snapshot")
 	}
 	info, e := os.Stat(bot.Workspace)
 	if !filepath.IsAbs(bot.Workspace) || e != nil || !info.IsDir() {
-		return piadapter.Result{}, errors.New("task workspace must be an existing absolute directory on Earth")
+		return agent.Result{}, errors.New("task workspace must be an existing absolute directory on Earth")
 	}
-	ex := earthexec.New(earthexec.Config{NodePath: c.NodePath, PiPath: c.PiPath, CLIPath: c.PiCLIPath, Tools: c.PiTools, StateDir: c.StateDir, SunURL: c.SunURL, RunnerID: c.RunnerID, RunnerToken: c.RunnerToken})
+	ex := earthexec.New(earthexec.Config{
+		StateDir:    c.StateDir,
+		SunURL:      c.SunURL,
+		RunnerID:    c.RunnerID,
+		RunnerToken: c.RunnerToken,
+		Adapters:    s.pool(),
+		Tools:       s.tools,
+	})
 	return ex.Execute(ctx, a, progress, started)
+}
+
+// advertisedAdapters reports the adapters this Earth can run, in the wire shape
+// Sun stores. It degrades to an empty list rather than failing the connection.
+func (s *settingsState) advertisedAdapters(ctx context.Context) ([]contracts.RunnerAdapter, error) {
+	pool := s.pool()
+	if pool == nil {
+		return nil, nil
+	}
+	list, err := pool.Adapters(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]contracts.RunnerAdapter, 0, len(list))
+	for _, a := range list {
+		out = append(out, contracts.RunnerAdapter{
+			Name:        a.Name,
+			Version:     a.Version,
+			DisplayName: a.DisplayName,
+			Healthy:     a.Healthy,
+		})
+	}
+	return out, nil
 }

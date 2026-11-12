@@ -13,8 +13,3 @@ bind_addr: "127.0.0.1:11521"
 ui_disabled: false
 admin_password: your-earth-admin-password
 
-# Optional overrides; normally Earth discovers Node.js and Pi automatically.
-# node_path: "/usr/bin/node"
-# pi_cli_path: "/path/to/pi-coding-agent/dist/cli.js"
-# pi_path: "/path/to/pi"
-# pi_tools: [read, grep, find, ls, edit, write, powershell]

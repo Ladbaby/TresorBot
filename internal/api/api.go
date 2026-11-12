@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net"
@@ -357,20 +358,27 @@ func (a *API) bots(w http.ResponseWriter, r *http.Request, p []string) {
 			return
 		case "PUT":
 			var q struct {
-				Revision     int64   `json:"revision"`
-				Alias        *string `json:"alias"`
-				Name         *string `json:"name"`
-				Instructions *string `json:"instructions"`
-				RunnerID     *string `json:"runner_id"`
-				Workspace    *string `json:"workspace"`
-				Adapter      *string `json:"adapter"`
-				SharedWrite  *bool   `json:"shared_write"`
-				Enabled      *bool   `json:"enabled"`
+				Revision       int64   `json:"revision"`
+				Alias          *string `json:"alias"`
+				Name           *string `json:"name"`
+				Instructions   *string `json:"instructions"`
+				RunnerID       *string `json:"runner_id"`
+				Workspace      *string `json:"workspace"`
+				Adapter        *string `json:"adapter"`
+				SharedWrite    *bool   `json:"shared_write"`
+				Enabled        *bool   `json:"enabled"`
+				MaxConcurrency *int    `json:"max_concurrency"`
 			}
 			if !decode(w, r, &q) {
 				return
 			}
-			v, e := a.s.UpdateBot(p[1], q.Revision, store.BotPatch{Alias: q.Alias, Name: q.Name, Instructions: q.Instructions, RunnerID: q.RunnerID, Workspace: q.Workspace, Adapter: q.Adapter, SharedWrite: q.SharedWrite, Enabled: q.Enabled})
+			// Reject an adapter the assigned runner cannot run, so a typo or a bot
+			// moved to a different Earth fails here rather than at dispatch time.
+			if e := a.checkAdapter(p[1], q.RunnerID, q.Adapter); e != nil {
+				writeErr(w, 400, e.Error())
+				return
+			}
+			v, e := a.s.UpdateBot(p[1], q.Revision, store.BotPatch{Alias: q.Alias, Name: q.Name, Instructions: q.Instructions, RunnerID: q.RunnerID, Workspace: q.Workspace, Adapter: q.Adapter, SharedWrite: q.SharedWrite, Enabled: q.Enabled, MaxConcurrency: q.MaxConcurrency})
 			respond(w, v, e)
 			return
 		case "DELETE":
@@ -487,6 +495,9 @@ func (a *API) runners(w http.ResponseWriter, r *http.Request, p []string) {
 		type inventory struct {
 			store.Runner
 			Status string `json:"status"`
+			// Adapters is what the Earth advertised at hello, so the dashboard can
+			// offer only adapters that runner can actually run.
+			Adapters []string `json:"adapters"`
 		}
 		out := make([]inventory, 0, len(v))
 		for _, r := range v {
@@ -496,7 +507,11 @@ func (a *API) runners(w http.ResponseWriter, r *http.Request, p []string) {
 			} else if a.o.RunnerStatus != nil {
 				status = a.o.RunnerStatus(r.ID)
 			}
-			out = append(out, inventory{r, status})
+			adapters, err := a.s.RunnerAdapters(r.ID)
+			if err != nil {
+				adapters = nil
+			}
+			out = append(out, inventory{r, status, adapters})
 		}
 		respond(w, out, nil)
 		return
@@ -612,4 +627,37 @@ func (a *API) events(w http.ResponseWriter, r *http.Request) {
 		case <-time.After(time.Second):
 		}
 	}
+}
+
+// checkAdapter validates a proposed adapter against the runner that will run it.
+//
+// A runner that has never advertised any adapter is treated as unknown rather
+// than incompatible: refusing there would break every existing deployment whose
+// Earth has not yet reported its catalogue.
+func (a *API) checkAdapter(botID string, runnerID, adapter *string) error {
+	if adapter == nil {
+		return nil
+	}
+	if !store.ValidAdapterName(*adapter) {
+		return errors.New("adapter name must be a lowercase slug such as pi or pi/fast")
+	}
+	target := ""
+	if runnerID != nil {
+		target = *runnerID
+	} else if bot, err := a.s.GetBot(botID); err == nil {
+		target = bot.RunnerID
+	}
+	if target == "" {
+		return nil
+	}
+	known, err := a.s.RunnerAdapters(target)
+	if err != nil || len(known) == 0 {
+		return nil
+	}
+	for _, name := range known {
+		if name == *adapter {
+			return nil
+		}
+	}
+	return fmt.Errorf("runner %s does not offer adapter %q", target, *adapter)
 }

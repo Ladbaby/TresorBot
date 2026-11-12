@@ -13,8 +13,11 @@ import (
 	"path/filepath"
 	"syscall"
 	"time"
+	"tresorbot/internal/agents"
+	"tresorbot/internal/agents/hostjs"
 	"tresorbot/internal/config"
 	"tresorbot/internal/earth"
+	"tresorbot/internal/earthexec"
 	"tresorbot/internal/earthjournal"
 	"tresorbot/internal/earthui"
 	"tresorbot/internal/ownerauth"
@@ -29,6 +32,11 @@ func main() {
 	}
 }
 func run(a []string) error {
+	// `agent` manages the adapter catalogue and needs no config, so it is
+	// dispatched before flag parsing: its own subcommands have their own flags.
+	if len(a) > 0 && a[0] == "agent" {
+		return runAgent(a[1:])
+	}
 	f := flag.NewFlagSet("tresorbot-earth", flag.ContinueOnError)
 	p := f.String("config", "", "YAML config path")
 	c := f.Bool("check-config", false, "validate config and exit")
@@ -50,6 +58,9 @@ func run(a []string) error {
 	if e != nil {
 		return e
 	}
+	if cfg.LegacyAgents {
+		log.Printf("earth.yaml uses node_path/pi_path/pi_cli_path/pi_tools; these still work but should move under agents.settings.pi")
+	}
 	if *c {
 		fmt.Println("config ok")
 		return nil
@@ -65,13 +76,41 @@ func run(a []string) error {
 	if e = os.MkdirAll(cfg.StateDir, 0755); e != nil {
 		return e
 	}
-	journal, e := earthjournal.Open(filepath.Join(cfg.StateDir, "earth.db"), 1000)
+	journal, e := earthjournal.Open(filepath.Join(cfg.StateDir, "earth.db"), journalCapacity(config.AgentsMaxSessions))
 	if e != nil {
 		return e
 	}
 	defer journal.Close()
-	settings := &settingsState{cfg: cfg, connection: "disconnected"}
-	client, e := earth.New(earth.Options{SunURL: cfg.SunURL, RunnerID: cfg.RunnerID, Token: cfg.RunnerToken, Journal: journal, Executor: settings, DefaultWorkspace: settings.workspace, ConnectionChanged: settings.connectionChanged, ValidateRuntime: settings.validateRuntime})
+	agentsDir, e := config.AgentsDir()
+	if e != nil {
+		return e
+	}
+	// The host ships inside this binary, so there is nothing to install for Earth
+	// itself to run. Only adapters are fetched, and only the ones a user chooses.
+	hostEntry, e := hostjs.Materialize(filepath.Join(cfg.StateDir, "agent-host"))
+	if e != nil {
+		return fmt.Errorf("extract agent host: %w", e)
+	}
+	pool, e := agents.NewPool(agents.PoolConfig{
+		Entry:         hostEntry,
+		AgentsDir:     agentsDir,
+		StateDir:      filepath.Join(cfg.StateDir, "agent-host"),
+		Hosts:         config.AgentsHosts,
+		MaxSessions:   config.AgentsMaxSessions,
+		CancelTimeout: config.AgentsCancelTimeout,
+		Logf:          log.Printf,
+	})
+	if e != nil {
+		return fmt.Errorf("agent adapters: %w", e)
+	}
+	defer pool.Close(context.Background())
+	gateway, e := earthexec.NewToolGateway(context.Background(), cfg.SunURL, cfg.RunnerID, cfg.RunnerToken)
+	if e != nil {
+		return fmt.Errorf("tool gateway: %w", e)
+	}
+	defer gateway.Close()
+	settings := &settingsState{cfg: cfg, connection: "disconnected", adapters: pool, tools: gateway}
+	client, e := earth.New(earth.Options{SunURL: cfg.SunURL, RunnerID: cfg.RunnerID, Token: cfg.RunnerToken, Journal: journal, Executor: settings, DefaultWorkspace: settings.workspace, ConnectionChanged: settings.connectionChanged, ValidateRuntime: settings.validateRuntime, Adapters: settings.advertisedAdapters})
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	results := make(chan error, 2)
@@ -139,4 +178,14 @@ func run(a []string) error {
 		return nil
 	}
 	return e
+}
+
+// journalCapacity sizes the durable assignment journal. A wide fleet can have
+// many admitted assignments between acknowledgements, so the capacity follows
+// the configured session ceiling instead of a fixed 1000.
+func journalCapacity(maxSessions int) int {
+	if maxSessions < 1000 {
+		return 1000
+	}
+	return maxSessions * 2
 }

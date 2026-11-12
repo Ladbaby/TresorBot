@@ -19,6 +19,9 @@ type Bot struct {
 	SharedWrite  bool   `json:"shared_write"`
 	Enabled      bool   `json:"enabled"`
 	Revision     int64  `json:"revision"`
+	// MaxConcurrency is how many tasks this bot may run at once across the fleet.
+	// One preserves the historic single-slot behaviour; the Worker runs wide.
+	MaxConcurrency int `json:"max_concurrency"`
 	// Kind distinguishes ordinary brains from the built-in Worker: a Worker has
 	// no memory and cannot delegate, so its tool surface is reduced accordingly.
 	Kind string `json:"kind"`
@@ -26,6 +29,7 @@ type Bot struct {
 type BotPatch struct {
 	Alias, Name, Instructions, RunnerID, Workspace, Adapter *string
 	SharedWrite, Enabled                                    *bool
+	MaxConcurrency                                          *int
 }
 type Contact struct {
 	Target      string `json:"target"`
@@ -37,11 +41,35 @@ const Worker = "worker"
 
 func (b Bot) IsWorker() bool { return b.Kind == Worker }
 
+// ValidAdapterName reports whether name can identify an agent adapter. Names are
+// lowercase slugs so they survive a round trip through a directory name, a
+// manifest and a JSON field without quoting.
+func ValidAdapterName(name string) bool {
+	if name == "" || len(name) > 64 {
+		return false
+	}
+	for i, c := range name {
+		switch {
+		case c >= 'a' && c <= 'z', c >= '0' && c <= '9':
+		case (c == '-' || c == '_') && i > 0:
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// MaxConcurrencyCeiling bounds a bot's parallel tasks so a typo cannot ask Sun
+// to fan out unbounded work.
+const MaxConcurrencyCeiling = 1000
+
 func validBot(b Bot) bool {
 	return len(b.Alias) <= 256 && len(b.Name) <= 256 &&
 		len(b.Instructions) <= 65536 && len(b.Workspace) <= 4096 &&
 		strings.TrimSpace(b.Alias) == b.Alias && b.Alias != "" &&
-		!strings.ContainsAny(b.Alias, "\r\n\t ") && strings.TrimSpace(b.Name) != "" && b.Adapter == "pi" &&
+		!strings.ContainsAny(b.Alias, "\r\n\t ") && strings.TrimSpace(b.Name) != "" &&
+		ValidAdapterName(b.Adapter) &&
+		b.MaxConcurrency >= 1 && b.MaxConcurrency <= MaxConcurrencyCeiling &&
 		(b.Kind == "" || b.Kind == Worker)
 }
 func (s *Store) CreateRunner(name string) (string, error) {
@@ -52,12 +80,39 @@ func (s *Store) CreateRunner(name string) (string, error) {
 	_, err := s.db.Exec(`INSERT INTO runners(id,name) VALUES(?,?)`, id, name)
 	return id, err
 }
-func (s *Store) UpdateRunnerMetadata(id, workspace, platform string) error {
-	if len(workspace) > 4096 || len(platform) > 256 || strings.ContainsRune(workspace, 0) || strings.ContainsRune(platform, 0) {
+
+// UpdateRunnerMetadata records what a runner reported at hello. Adapters is the
+// JSON array stored in runners.adapters; an empty string clears it.
+func (s *Store) UpdateRunnerMetadata(id, workspace, platform, adapters string) error {
+	if len(workspace) > 4096 || len(platform) > 256 || strings.ContainsRune(workspace, 0) || strings.ContainsRune(platform, 0) || len(adapters) > 16384 {
 		return ErrInvalid
 	}
-	r, err := s.db.Exec(`UPDATE runners SET default_workspace=?,platform=? WHERE id=? AND revoked=0`, workspace, platform, id)
+	r, err := s.db.Exec(`UPDATE runners SET default_workspace=?,platform=?,adapters=? WHERE id=? AND revoked=0`, workspace, platform, adapters, id)
 	return changed(r, err)
+}
+
+// RunnerAdapters returns the adapter names a runner advertised. An empty slice
+// means the runner has never reported any, which callers treat as "unknown"
+// rather than "supports nothing".
+func (s *Store) RunnerAdapters(id string) ([]string, error) {
+	var raw string
+	if err := s.db.QueryRow(`SELECT COALESCE(adapters,'') FROM runners WHERE id=?`, id).Scan(&raw); err != nil {
+		return nil, err
+	}
+	if raw == "" {
+		return nil, nil
+	}
+	var out []struct {
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal([]byte(raw), &out); err != nil {
+		return nil, nil
+	}
+	names := make([]string, 0, len(out))
+	for _, a := range out {
+		names = append(names, a.Name)
+	}
+	return names, nil
 }
 
 func (s *Store) RevokeRunner(id string) error {
@@ -80,20 +135,23 @@ func (s *Store) CreateBot(b Bot) (Bot, error) {
 	if b.Adapter == "" {
 		b.Adapter = "pi"
 	}
+	if b.MaxConcurrency < 1 {
+		b.MaxConcurrency = 1
+	}
 	if !validBot(b) {
 		return Bot{}, ErrInvalid
 	}
-	_, err := s.db.Exec(`INSERT INTO bots(id,alias,name,instructions,runner_id,workspace,adapter,shared_write,enabled,kind) VALUES(?,?,?,?,NULLIF(?,''),?,?,?,?,?)`, b.ID, b.Alias, b.Name, b.Instructions, b.RunnerID, b.Workspace, b.Adapter, b.SharedWrite, b.Enabled, b.Kind)
+	_, err := s.db.Exec(`INSERT INTO bots(id,alias,name,instructions,runner_id,workspace,adapter,shared_write,enabled,kind,max_concurrency) VALUES(?,?,?,?,NULLIF(?,''),?,?,?,?,?,?)`, b.ID, b.Alias, b.Name, b.Instructions, b.RunnerID, b.Workspace, b.Adapter, b.SharedWrite, b.Enabled, b.Kind, b.MaxConcurrency)
 	return b, err
 }
 
 type scanner interface{ Scan(...any) error }
 
-const botColumns = `id,alias,name,instructions,COALESCE(runner_id,''),workspace,adapter,shared_write,enabled,revision,COALESCE(kind,'')`
+const botColumns = `id,alias,name,instructions,COALESCE(runner_id,''),workspace,adapter,shared_write,enabled,revision,COALESCE(kind,''),COALESCE(max_concurrency,1)`
 
 func scanBot(row scanner) (Bot, error) {
 	var b Bot
-	err := row.Scan(&b.ID, &b.Alias, &b.Name, &b.Instructions, &b.RunnerID, &b.Workspace, &b.Adapter, &b.SharedWrite, &b.Enabled, &b.Revision, &b.Kind)
+	err := row.Scan(&b.ID, &b.Alias, &b.Name, &b.Instructions, &b.RunnerID, &b.Workspace, &b.Adapter, &b.SharedWrite, &b.Enabled, &b.Revision, &b.Kind, &b.MaxConcurrency)
 	if err == sql.ErrNoRows {
 		err = ErrNotFound
 	}
@@ -153,10 +211,13 @@ func (s *Store) UpdateBot(id string, revision int64, p BotPatch) (Bot, error) {
 	if p.SharedWrite != nil {
 		b.SharedWrite = *p.SharedWrite
 	}
+	if p.MaxConcurrency != nil {
+		b.MaxConcurrency = *p.MaxConcurrency
+	}
 	if !validBot(b) {
 		return b, ErrInvalid
 	}
-	_, err = tx.Exec(`UPDATE bots SET alias=?,name=?,instructions=?,runner_id=NULLIF(?,''),workspace=?,adapter=?,shared_write=?,enabled=?,revision=revision+1 WHERE id=?`, b.Alias, b.Name, b.Instructions, b.RunnerID, b.Workspace, b.Adapter, b.SharedWrite, b.Enabled, id)
+	_, err = tx.Exec(`UPDATE bots SET alias=?,name=?,instructions=?,runner_id=NULLIF(?,''),workspace=?,adapter=?,shared_write=?,enabled=?,max_concurrency=?,revision=revision+1 WHERE id=?`, b.Alias, b.Name, b.Instructions, b.RunnerID, b.Workspace, b.Adapter, b.SharedWrite, b.Enabled, b.MaxConcurrency, id)
 	if err != nil {
 		return b, err
 	}
@@ -260,6 +321,11 @@ func snapshot(b Bot) []byte { data, _ := json.Marshal(b); return data }
 // present and always a permitted recipient for every enabled bot.
 const WorkerAlias = "bot/worker"
 
+// WorkerDefaultConcurrency is how many tasks the built-in Worker may run at
+// once. The Worker exists to absorb wide, trivial fan-out, so it starts at the
+// fleet size TresorBot targets rather than at the single slot given to brains.
+const WorkerDefaultConcurrency = 500
+
 // EnsureWorker idempotently creates the built-in Worker bot and returns its
 // ID. The Worker is a stateless recipient (no memory, no delegation).
 func (s *Store) EnsureWorker() (string, error) {
@@ -268,7 +334,7 @@ func (s *Store) EnsureWorker() (string, error) {
 	} else if err != ErrNotFound {
 		return "", err
 	}
-	b, err := s.CreateBot(Bot{Alias: WorkerAlias, Name: "Worker", Enabled: true, Kind: Worker})
+	b, err := s.CreateBot(Bot{Alias: WorkerAlias, Name: "Worker", Enabled: true, Kind: Worker, MaxConcurrency: WorkerDefaultConcurrency})
 	if err != nil {
 		return "", err
 	}
@@ -329,8 +395,8 @@ func workerIDTx(tx *sql.Tx) (string, error) {
 		return "", err
 	}
 	id = uuid.NewString()
-	if _, err = tx.Exec(`INSERT INTO bots(id,alias,name,instructions,workspace,adapter,shared_write,enabled,kind) VALUES(?,?,?,?,?,?,?,?,?)`,
-		id, WorkerAlias, "Worker", "", "", "pi", false, true, Worker); err != nil {
+	if _, err = tx.Exec(`INSERT INTO bots(id,alias,name,instructions,workspace,adapter,shared_write,enabled,kind,max_concurrency) VALUES(?,?,?,?,?,?,?,?,?,?)`,
+		id, WorkerAlias, "Worker", "", "", "pi", false, true, Worker, WorkerDefaultConcurrency); err != nil {
 		return "", err
 	}
 	return id, nil

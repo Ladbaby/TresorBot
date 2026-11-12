@@ -13,15 +13,15 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"tresorbot/internal/agent"
 	"tresorbot/internal/contracts"
 	"tresorbot/internal/earthjournal"
-	"tresorbot/internal/piadapter"
 	"tresorbot/internal/runnertransport"
 	"tresorbot/internal/store"
 )
 
 type Executor interface {
-	Execute(context.Context, contracts.Assign, func(int, string) error, func(piadapter.Progress)) (piadapter.Result, error)
+	Execute(context.Context, contracts.Assign, func(int, string) error, func(agent.Progress)) (agent.Result, error)
 }
 type Options struct {
 	SunURL, RunnerID, Token string
@@ -30,6 +30,9 @@ type Options struct {
 	DefaultWorkspace        func() string
 	ConnectionChanged       func(bool, string)
 	ValidateRuntime         func() error
+	// Adapters reports the agent adapters this Earth can run. It is a callback
+	// because the catalogue is discovered from disk and can change on reload.
+	Adapters func(context.Context) ([]contracts.RunnerAdapter, error)
 }
 type worker struct {
 	cancel context.CancelFunc
@@ -164,6 +167,13 @@ func (c *Client) session(ctx context.Context) error {
 	hello := contracts.Control{RunnerRecord: c.record("hello"), Platform: runtime.GOOS}
 	if c.o.DefaultWorkspace != nil {
 		hello.DefaultWorkspace = c.o.DefaultWorkspace()
+	}
+	if c.o.Adapters != nil {
+		// A discovery failure must not stop Earth from connecting: it can still
+		// run assignments for bots whose adapter is already known.
+		if advertised, err := c.o.Adapters(sessionCtx); err == nil {
+			hello.Adapters = advertised
+		}
 	}
 	if c.o.ConnectionChanged != nil {
 		c.o.ConnectionChanged(false, "connecting")
@@ -355,11 +365,19 @@ func (c *Client) launch(ctx context.Context, a contracts.Assign) error {
 		c.mu.Unlock()
 		return nil
 	}
+	limit := bot.MaxConcurrency
+	if limit < 1 {
+		limit = 1
+	}
+	occupied := 0
 	for _, w := range c.workers {
 		if w.bot == bot.ID {
-			c.mu.Unlock()
-			return errors.New("bot execution slot already occupied")
+			occupied++
 		}
+	}
+	if occupied >= limit {
+		c.mu.Unlock()
+		return errors.New("bot execution slots are all occupied")
 	}
 	if err = c.o.Journal.BeginLaunch(a.AssignmentID, a.RunnerID, a.Epoch); err != nil {
 		c.mu.Unlock()
@@ -387,9 +405,11 @@ func (c *Client) launch(ctx context.Context, a contracts.Assign) error {
 				c.mu.Unlock()
 			}
 			return err
-		}, func(p piadapter.Progress) {
+		}, func(p agent.Progress) {
 			// Persist only lifecycle categories, never native transcripts/tool args.
-			if p.Type != "agent_start" && p.Type != "agent_settled" && p.Type != "tool_execution_start" && p.Type != "tool_execution_end" {
+			switch p.Type {
+			case agent.ProgressTurnStarted, agent.ProgressTurnSettled, agent.ProgressToolCall, agent.ProgressToolResult:
+			default:
 				return
 			}
 			record, err := c.o.Journal.Get(a.AssignmentID)

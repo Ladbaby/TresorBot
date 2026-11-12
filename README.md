@@ -61,9 +61,15 @@ Else, for a source build, follow these steps:
 1. Copy `sun.example.yaml` to `sun.yaml` and choose a password and two different tokens.
 2. Start Sun: `./tresorbot-sun --config sun.yaml`.
 3. Open **http://127.0.0.1:11520**. In **Earths**, create an Earth entry and issue its credential.
-4. Copy `earth.example.yaml` to `earth.yaml`. Fill in the Earth ID/token. 
-5. Start Earth: `./tresorbot-earth --config earth.yaml`.
-6. Earth automatically creates and uses **`~/.tresorbot/workspace`** on its machine. To change it, open Earth's local dashboard at **http://127.0.0.1:11521**. In Sun's **Bots** tab, create `bot/personal` and select the Earth.
+4. Copy `earth.example.yaml` to `earth.yaml`. Fill in the Earth ID/token.
+5. Install the agent you want on that Earth (only what you need):
+   ```bash
+   ./tresorbot-earth agent install <bundle-url> [--sha256 <digest>]
+   ./tresorbot-earth agent list
+   ```
+   Bundles and their digests are on the [TresorBot-agents releases page](https://github.com/Ladbaby/TresorBot-agents/releases). Each adapter keeps its own settings in `~/.tresorbot/agents/<name>/config.json`.
+6. Start Earth: `./tresorbot-earth --config earth.yaml`.
+7. Earth automatically creates and uses **`~/.tresorbot/workspace`** on its machine. To change it, open Earth's local dashboard at **http://127.0.0.1:11521**. In Sun's **Bots** tab, create `bot/personal`, select the Earth, and choose the adapter you installed.
 
 
 ### Run as user-space systemd services (Linux)
@@ -145,7 +151,7 @@ sudo journalctl -u tresorbot-$role.service -f
 # sudo systemctl stop tresorbot-$role.service
 ```
 
-If Node is installed through nvm, add the directory containing `node` to the unit's `PATH`, or set `node_path` in `earth.yaml`.
+If Node is installed through nvm, add the directory containing `node` to the unit's `PATH`. Earth runs its agent host with the `node` it finds there.
 
 ## Connect Tresor
 

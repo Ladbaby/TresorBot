@@ -45,7 +45,7 @@ func UpdateEarthSettings(path, revision string, fields map[string]string) (Confi
 	mapping := doc.Content[0]
 	for key, value := range fields {
 		switch key {
-		case "default_workspace", "node_path", "pi_path", "pi_cli_path":
+		case "default_workspace", "agents_dir", "node_path", "pi_path", "pi_cli_path":
 		default:
 			return Config{}, "", errors.New("unsupported Earth setting")
 		}
@@ -105,9 +105,7 @@ func UpdateEarthSettings(path, revision string, fields map[string]string) (Confi
 	if err != nil {
 		return Config{}, "", err
 	}
-	if cfg.PiPath != "" && cfg.PiCLIPath != "" {
-		return Config{}, "", errors.New("choose Pi path or Pi CLI path, not both")
-	}
+
 	// Catch external modifications during validation as well as stale browser drafts.
 	current, err := FileRevision(path)
 	if err != nil {

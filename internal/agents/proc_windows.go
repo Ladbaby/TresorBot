@@ -1,6 +1,6 @@
 //go:build windows
 
-package piadapter
+package agents
 
 import (
 	"fmt"

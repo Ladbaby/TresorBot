@@ -217,7 +217,14 @@ func claimTask(tx *sql.Tx, id, runner string) (Assignment, error) {
 	if err = tx.QueryRow(`SELECT COUNT(*) FROM tasks WHERE bot_id=? AND direct_parent=0 AND state IN('dispatching','running','waiting_child','cancelling','needs_attention')`, t.BotID).Scan(&active); err != nil {
 		return Assignment{}, err
 	}
-	if active > 0 {
+	var limit int
+	if err = tx.QueryRow(`SELECT max_concurrency FROM bots WHERE id=?`, t.BotID).Scan(&limit); err != nil {
+		return Assignment{}, err
+	}
+	if limit < 1 {
+		limit = 1
+	}
+	if active >= limit {
 		return Assignment{}, ErrConflict
 	}
 	if admitted.Workspace == "" {

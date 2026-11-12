@@ -27,6 +27,17 @@ type Control struct {
 	EventID          string               `json:"event_id,omitempty"`
 	DefaultWorkspace string               `json:"default_workspace,omitempty"`
 	Platform         string               `json:"platform,omitempty"`
+	// Adapters lists the agent adapters this Earth can run, so Sun can offer
+	// only adapters that will actually work on the runner a bot is placed on.
+	Adapters []RunnerAdapter `json:"adapters,omitempty"`
+}
+
+// RunnerAdapter is one adapter as advertised by a runner at hello.
+type RunnerAdapter struct {
+	Name        string `json:"name"`
+	Version     string `json:"version,omitempty"`
+	DisplayName string `json:"display_name,omitempty"`
+	Healthy     bool   `json:"healthy"`
 }
 
 func (c Control) Validate() error {
@@ -38,12 +49,22 @@ func (c Control) Validate() error {
 		if c.AssignmentID != "" || c.Epoch != 0 || len(c.Assignments) != 0 || c.Sequence != 0 || c.EventID != "" || len(c.DefaultWorkspace) > 4096 || len(c.Platform) > 256 || strings.ContainsRune(c.DefaultWorkspace, 0) || strings.ContainsRune(c.Platform, 0) {
 			return errors.New("invalid hello metadata")
 		}
+		if len(c.Adapters) > 64 {
+			return errors.New("too many adapters advertised")
+		}
+		seen := map[string]bool{}
+		for _, a := range c.Adapters {
+			if !validAdapterName(a.Name) || seen[a.Name] || len(a.Version) > 64 || len(a.DisplayName) > 128 {
+				return errors.New("invalid adapter advertisement")
+			}
+			seen[a.Name] = true
+		}
 	case "heartbeat", "ready":
-		if c.AssignmentID != "" || c.Epoch != 0 || len(c.Assignments) != 0 || c.Sequence != 0 || c.EventID != "" || c.DefaultWorkspace != "" || c.Platform != "" {
+		if c.AssignmentID != "" || c.Epoch != 0 || len(c.Assignments) != 0 || c.Sequence != 0 || c.EventID != "" || c.DefaultWorkspace != "" || c.Platform != "" || len(c.Adapters) != 0 {
 			return errors.New("invalid connection record")
 		}
 	case "reconcile":
-		if c.AssignmentID != "" || c.Epoch != 0 || c.Sequence != 0 || c.EventID != "" || len(c.Assignments) > 1000 || c.DefaultWorkspace != "" || c.Platform != "" {
+		if c.AssignmentID != "" || c.Epoch != 0 || c.Sequence != 0 || c.EventID != "" || len(c.Assignments) > 10000 || c.DefaultWorkspace != "" || c.Platform != "" || len(c.Adapters) != 0 {
 			return errors.New("invalid reconciliation")
 		}
 		seen := map[string]bool{}
@@ -112,4 +133,21 @@ func DecodeRunnerRecord(data []byte) (any, error) {
 		return nil, errors.New("terminal requires durable report sequence")
 	}
 	return v, nil
+}
+
+// validAdapterName mirrors the store's slug rule. It is duplicated here so the
+// wire contract can reject a malformed advertisement without importing storage.
+func validAdapterName(name string) bool {
+	if name == "" || len(name) > 64 {
+		return false
+	}
+	for i, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+		case (r == '/' || r == '-' || r == '_') && i > 0 && i < len(name)-1:
+		default:
+			return false
+		}
+	}
+	return true
 }

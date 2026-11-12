@@ -27,9 +27,9 @@ type Sessions interface {
 
 type Settings struct {
 	DefaultWorkspace string `json:"default_workspace"`
-	NodePath         string `json:"node_path"`
-	PiPath           string `json:"pi_path"`
-	PiCLIPath        string `json:"pi_cli_path"`
+	// AgentsDir is where agent adapters live. Each adapter supplies its own
+	// settings, so Earth no longer carries pi-specific path fields.
+	AgentsDir string `json:"agents_dir"`
 }
 
 type Options struct {
