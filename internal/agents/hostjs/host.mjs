@@ -55,6 +55,15 @@ class SessionPool {
     return session;
   }
 
+  /** How many live sessions belong to one adapter. */
+  countFor(adapterName) {
+    let n = 0;
+    for (const session of this.sessions.values()) {
+      if (session.adapterName === adapterName) n++;
+    }
+    return n;
+  }
+
   delete(id) {
     const session = this.sessions.get(id);
     this.sessions.delete(id);
@@ -208,6 +217,23 @@ class AgentHost {
         "overloaded",
       );
       return;
+    }
+    // An adapter may declare its own ceiling, because per-session cost is a
+    // property of the agent, not of the host: a pi session is ~0.4 MB in-process
+    // while a Claude Code session spawns a ~131 MB child. Counted per adapter so
+    // a busy Claude cap cannot starve pi.
+    const adapterLimit = adapter.limits?.max_sessions;
+    if (typeof adapterLimit === "number" && adapterLimit > 0) {
+      const live = this.pool.countFor(adapter.name);
+      if (live >= adapterLimit) {
+        this.writer.fail(
+          id,
+          -32000,
+          `adapter ${adapter.name} is at its ${adapterLimit}-session ceiling`,
+          "overloaded",
+        );
+        return;
+      }
     }
     const sessionId = params.session_id;
     // Validate here, once, so every adapter gets the same guarantees and Earth

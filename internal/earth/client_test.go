@@ -210,9 +210,17 @@ func TestOutboundRunnerDispatchesAndPersistsTerminalResult(t *testing.T) {
 			if json.Unmarshal(got.Snapshot, &pinned) != nil || pinned.Workspace != dir {
 				t.Fatal("inherited workspace not pinned", string(got.Snapshot))
 			}
-			var result map[string]string
+			var result map[string]any
 			if json.Unmarshal(got.Result, &result) != nil || result["text"] != "test result" {
 				t.Fatal(string(got.Result))
+			}
+			// The adapter's stop reason and session reference have to survive to
+			// Sun: without them an operator cannot tell how a turn ended, and a
+			// resumed conversation looks like a fresh one.
+			for _, key := range []string{"stop_reason", "session_ref"} {
+				if _, ok := result[key]; !ok {
+					t.Errorf("terminal result is missing %q: %s", key, string(got.Result))
+				}
 			}
 			break
 		}

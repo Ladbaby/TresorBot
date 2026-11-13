@@ -97,10 +97,23 @@ export async function loadAdapter(dir, { bust = 0 } = {}) {
     description: manifest.description ?? "",
     capabilities: manifest.capabilities ?? [],
     settings: manifest.settings ?? [],
+    // Optional per-adapter session ceiling. Absent means "use the host ceiling",
+    // so an adapter that declares nothing behaves exactly as it did before.
+    limits: normalizeLimits(manifest.limits),
     digest,
     dir: resolve(dir),
     adapter: info,
   };
+}
+
+/** Validates the optional `limits` block; an unusable value is ignored. */
+function normalizeLimits(limits) {
+  if (!limits || typeof limits !== "object") return undefined;
+  const maxSessions = limits.max_sessions;
+  if (typeof maxSessions !== "number" || !Number.isInteger(maxSessions) || maxSessions <= 0) {
+    return undefined;
+  }
+  return { max_sessions: maxSessions };
 }
 
 /**
@@ -150,6 +163,9 @@ export function describeAdapters(adapters, problems = []) {
       healthy: !a.stale,
     };
     if (a.error) record.error = a.error;
+    // Reported so Earth can refuse work it knows will be shed, instead of
+    // discovering the ceiling only when an assignment fails.
+    if (a.limits) record.limits = a.limits;
     return record;
   });
   for (const problem of problems) {

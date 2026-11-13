@@ -35,6 +35,18 @@ type Manifest struct {
 	Requires []string `json:"requires,omitempty"`
 	// Settings declares the configuration Earth should collect and validate.
 	Settings []SettingDescriptor `json:"settings,omitempty"`
+	// Limits lets an adapter declare its own resource ceiling. Per-session cost
+	// is a property of the agent — a pi session is ~0.4 MB in-process while a
+	// Claude Code session spawns a ~131 MB child — so the cap belongs with the
+	// adapter rather than in Earth's config.
+	Limits *ManifestLimits `json:"limits,omitempty"`
+}
+
+// ManifestLimits is an adapter's declared resource ceiling.
+type ManifestLimits struct {
+	// MaxSessions caps concurrent sessions for this adapter alone. Zero or
+	// absent means "use the host ceiling".
+	MaxSessions int `json:"max_sessions,omitempty"`
 }
 
 // LoadedAdapter is a validated manifest plus provenance.
