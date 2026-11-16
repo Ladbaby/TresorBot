@@ -213,6 +213,13 @@ func Install(ctx context.Context, in InstallInput) (Installed, error) {
 			return Installed{}, err
 		}
 	}
+	// Files the bundle used to declare but no longer does are removed, so an
+	// upgrade cannot leave a stale module behind. A stale copy of a file the
+	// adapter now resolves from elsewhere would be picked up by fallbacks and
+	// silently shadow the current one.
+	if err := pruneStale(target, bundle.Files); err != nil {
+		return Installed{}, err
+	}
 
 	out := Installed{Name: m.Name, Version: m.Version, Digest: actual, Path: target, Verified: in.SHA256 != ""}
 	if raw, ok := bundle.Files["agent.json"]; ok {
@@ -229,6 +236,59 @@ func Install(ctx context.Context, in InstallInput) (Installed, error) {
 		}
 	}
 	return out, nil
+}
+
+// unmanaged lists names inside an adapter directory the installer must never
+// delete: the operator's settings and npm's own bookkeeping.
+var unmanaged = map[string]bool{
+	"config.json":       true,
+	"package.json":      true,
+	"package-lock.json": true,
+	"node_modules":      true,
+}
+
+// pruneStale deletes files a previous install left behind that the new bundle no
+// longer declares.
+//
+// This matters because adapters resolve some modules through fallbacks. If a
+// file the bundle dropped stays on disk, the fallback finds it and the adapter
+// runs stale code while its manifest claims the new version — the exact class of
+// silent failure that made a broken tool path look like a model choice.
+//
+// The rule is deliberately narrow: only files whose extension the bundle itself
+// ships are considered, so an operator's unrelated notes or scratch files are
+// left alone, and unmanaged names are never touched.
+func pruneStale(target string, files map[string]string) error {
+	entries, err := os.ReadDir(target)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	managedExt := map[string]bool{}
+	for name := range files {
+		managedExt[filepath.Ext(name)] = true
+	}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if unmanaged[name] {
+			continue
+		}
+		if _, kept := files[name]; kept {
+			continue
+		}
+		if !managedExt[filepath.Ext(name)] {
+			continue
+		}
+		if err := os.Remove(filepath.Join(target, name)); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	return nil
 }
 
 // npmInstall fetches an adapter's runtime dependency into its own directory, so

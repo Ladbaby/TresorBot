@@ -87,14 +87,18 @@ func run(a []string) error {
 	}
 	// The host ships inside this binary, so there is nothing to install for Earth
 	// itself to run. Only adapters are fetched, and only the ones a user chooses.
-	hostEntry, e := hostjs.Materialize(filepath.Join(cfg.StateDir, "agent-host"))
+	hostDir := filepath.Join(cfg.StateDir, "agent-host")
+	hostEntry, e := hostjs.Materialize(hostDir)
 	if e != nil {
 		return fmt.Errorf("extract agent host: %w", e)
 	}
 	pool, e := agents.NewPool(agents.PoolConfig{
-		Entry:         hostEntry,
+		Entry: hostEntry,
+		// The MCP bridge ships with Earth too, not with each adapter: it adapts
+		// this binary's tool gateway to MCP, so it must version with the binary.
+		MCPPath:       hostjs.MCPPath(hostDir),
 		AgentsDir:     agentsDir,
-		StateDir:      filepath.Join(cfg.StateDir, "agent-host"),
+		StateDir:      hostDir,
 		Hosts:         config.AgentsHosts,
 		MaxSessions:   config.AgentsMaxSessions,
 		CancelTimeout: config.AgentsCancelTimeout,

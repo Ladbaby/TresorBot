@@ -34,8 +34,10 @@ type ExecuteRequest struct {
 
 // PoolConfig describes the whole adapter runtime for one Earth.
 type PoolConfig struct {
-	NodePath      string
-	Entry         string
+	NodePath string
+	Entry    string
+	// MCPPath is the extracted MCP bridge every host advertises to adapters.
+	MCPPath       string
 	AgentsDir     string
 	StateDir      string
 	Hosts         int
@@ -85,6 +87,7 @@ func NewPool(cfg PoolConfig) (*Pool, error) {
 		host, err := NewHost(HostConfig{
 			NodePath:      cfg.NodePath,
 			Entry:         cfg.Entry,
+			MCPPath:       cfg.MCPPath,
 			AgentsDir:     cfg.AgentsDir,
 			StateDir:      cfg.StateDir,
 			MaxSessions:   perHost,

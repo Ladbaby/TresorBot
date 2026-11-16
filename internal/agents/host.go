@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"tresorbot/internal/agents/hostjs"
 )
 
 // ErrOverloaded is returned when the host refuses a session because it is at its
@@ -24,6 +26,9 @@ type HostConfig struct {
 	NodePath string
 	// Entry is the absolute path to the host's entry module.
 	Entry string
+	// MCPPath is the extracted stdio MCP server. It is handed to the host so
+	// adapters whose agent speaks MCP can launch it without shipping a copy.
+	MCPPath string
 	// AgentsDir is the adapter directory handed to the host.
 	AgentsDir string
 	// StateDir is where the host may keep its own bookkeeping.
@@ -141,7 +146,11 @@ func (h *Host) ensure(ctx context.Context) error {
 
 	cmd := exec.Command(h.nodePath(), h.args()...)
 	cmd.Dir = h.cfg.StateDir
-	cmd.Env = append(os.Environ(), "TRESORBOT_AGENTS_DIR="+h.cfg.AgentsDir, "TRESORBOT_HOST_STATE_DIR="+h.cfg.StateDir)
+	cmd.Env = append(os.Environ(),
+		"TRESORBOT_AGENTS_DIR="+h.cfg.AgentsDir,
+		"TRESORBOT_HOST_STATE_DIR="+h.cfg.StateDir,
+		hostjs.MCPPathEnv+"="+h.cfg.MCPPath,
+	)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		h.reset()
