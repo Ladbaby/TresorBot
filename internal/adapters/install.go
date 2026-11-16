@@ -41,9 +41,27 @@ type InstallInput struct {
 	SHA256 string
 	// Dir is the adapter catalogue root. Empty uses the default.
 	Dir string
+	// ManifestName names the descriptor file the bundle must contain. Empty means
+	// DefaultManifestName ("agent.json").
+	//
+	// It is a field rather than a second installer for one reason: verification,
+	// atomic writes, stale pruning and the npm --prefix fix are identical for both
+	// extension kinds. Two copies of this code would diverge on exactly the
+	// details that took a deployment to learn.
+	ManifestName string
 	// Client overrides the HTTP client, so a test can trust its own TLS
 	// certificate without weakening the default one.
 	Client *http.Client
+}
+
+// DefaultManifestName is the agent adapter descriptor file.
+const DefaultManifestName = "agent.json"
+
+func (in InstallInput) manifestName() string {
+	if in.ManifestName == "" {
+		return DefaultManifestName
+	}
+	return in.ManifestName
 }
 
 // Installed describes one adapter present in the catalogue.
@@ -63,6 +81,16 @@ type Installed struct {
 // Lengths are prefixed so that moving bytes between files changes the digest;
 // without them, renaming a file or shifting a boundary would collide.
 func SourceDigest(files map[string]string) (string, error) {
+	return SourceDigestWithManifest(files, DefaultManifestName)
+}
+
+// SourceDigestWithManifest computes the published digest for a bundle of any
+// extension kind, requiring manifestName to be present.
+//
+// The digest scheme itself is shared, so an input bundle and an adapter bundle
+// are verified by the same arithmetic and the same published tooling. Only the
+// required descriptor file differs.
+func SourceDigestWithManifest(files map[string]string, manifestName string) (string, error) {
 	if len(files) == 0 || len(files) > 256 {
 		return "", errors.New("bundle has an invalid file count")
 	}
@@ -84,8 +112,8 @@ func SourceDigest(files map[string]string) (string, error) {
 	if total > MaxBundleBytes {
 		return "", errors.New("bundle exceeds the source limit")
 	}
-	if _, ok := files["agent.json"]; !ok {
-		return "", errors.New("agent.json is required")
+	if _, ok := files[manifestName]; !ok {
+		return "", fmt.Errorf("%s is required", manifestName)
 	}
 	sort.Strings(names)
 	h := sha256.New()
@@ -175,7 +203,8 @@ func Install(ctx context.Context, in InstallInput) (Installed, error) {
 	if err := decoder.Decode(&bundle); err != nil {
 		return Installed{}, fmt.Errorf("invalid adapter bundle: %w", err)
 	}
-	actual, err := SourceDigest(bundle.Files)
+	manifestName := in.manifestName()
+	actual, err := SourceDigestWithManifest(bundle.Files, manifestName)
 	if err != nil {
 		return Installed{}, err
 	}
@@ -185,14 +214,14 @@ func Install(ctx context.Context, in InstallInput) (Installed, error) {
 		return Installed{}, fmt.Errorf("digest mismatch: bundle is %s, expected %s", actual, in.SHA256)
 	}
 	var m manifest
-	if err := json.Unmarshal([]byte(bundle.Files["agent.json"]), &m); err != nil {
-		return Installed{}, fmt.Errorf("invalid agent.json: %w", err)
+	if err := json.Unmarshal([]byte(bundle.Files[manifestName]), &m); err != nil {
+		return Installed{}, fmt.Errorf("invalid %s: %w", manifestName, err)
 	}
 	if !adapterNamePattern.MatchString(m.Name) {
 		return Installed{}, fmt.Errorf("invalid adapter name %q", m.Name)
 	}
 	if strings.TrimSpace(m.Version) == "" {
-		return Installed{}, errors.New("agent.json must declare a version")
+		return Installed{}, fmt.Errorf("%s must declare a version", manifestName)
 	}
 
 	target := filepath.Join(dir, filepath.FromSlash(m.Name))
@@ -222,7 +251,7 @@ func Install(ctx context.Context, in InstallInput) (Installed, error) {
 	}
 
 	out := Installed{Name: m.Name, Version: m.Version, Digest: actual, Path: target, Verified: in.SHA256 != ""}
-	if raw, ok := bundle.Files["agent.json"]; ok {
+	if raw, ok := bundle.Files[manifestName]; ok {
 		var full struct {
 			DisplayName string `json:"display_name"`
 		}
@@ -360,7 +389,11 @@ func fetch(ctx context.Context, rawURL string, client *http.Client) ([]byte, err
 }
 
 // List reports the adapters present in a catalogue directory.
-func List(dir string) ([]Installed, error) {
+func List(dir string) ([]Installed, error) { return ListWithManifest(dir, DefaultManifestName) }
+
+// ListWithManifest reports the extension packages present in a catalogue
+// directory, reading manifestName from each package directory.
+func ListWithManifest(dir, manifestName string) ([]Installed, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -374,7 +407,7 @@ func List(dir string) ([]Installed, error) {
 			continue
 		}
 		path := filepath.Join(dir, entry.Name())
-		raw, err := os.ReadFile(filepath.Join(path, "agent.json"))
+		raw, err := os.ReadFile(filepath.Join(path, manifestName))
 		if err != nil {
 			continue
 		}
@@ -396,7 +429,10 @@ func List(dir string) ([]Installed, error) {
 
 // Remove deletes an installed adapter. The name is validated first so a crafted
 // argument cannot reach outside the catalogue.
-func Remove(dir, name string) error {
+func Remove(dir, name string) error { return RemoveWithManifest(dir, name, DefaultManifestName) }
+
+// RemoveWithManifest deletes an installed extension package of any kind.
+func RemoveWithManifest(dir, name, manifestName string) error {
 	if !adapterNamePattern.MatchString(name) {
 		return fmt.Errorf("invalid adapter name %q", name)
 	}
@@ -404,8 +440,8 @@ func Remove(dir, name string) error {
 	if path != filepath.Clean(dir) && !strings.HasPrefix(path, filepath.Clean(dir)+string(os.PathSeparator)) {
 		return errors.New("adapter path escapes the catalogue")
 	}
-	if _, err := os.Stat(filepath.Join(path, "agent.json")); err != nil {
-		return fmt.Errorf("adapter %q is not installed", name)
+	if _, err := os.Stat(filepath.Join(path, manifestName)); err != nil {
+		return fmt.Errorf("%q is not installed", name)
 	}
 	return os.RemoveAll(path)
 }

@@ -7,3 +7,17 @@ admin_password: "replace-with-your-owner-password"
 integration_token: "replace-with-service-token"
 gateway_control_token: "replace-with-control-token"
 gateway_url: "http://127.0.0.1:11510"
+
+
+# environments:
+#   enabled: true
+#   # Where installed environments live. Defaults to ~/.tresorbot/environments.
+#   dir: "/var/lib/tresorbot/environments"
+#   # Runs the environment host. Defaults to `node` on PATH.
+#   node_path: "/usr/bin/node"
+#   # Give webhook ingress its own listener, so the port an upstream posts to can
+#   # be exposed without also exposing the owner dashboard on bind_addr.
+#   ingress_addr: "127.0.0.1:11522"
+#   # Queued events per bot before an upstream is told to retry.
+#   max_pending_per_bot: 100
+

@@ -5,12 +5,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"sync"
+	"time"
 
 	"tresorbot/internal/api"
 	"tresorbot/internal/bottools"
 	"tresorbot/internal/config"
+	"tresorbot/internal/environments"
 	"tresorbot/internal/memory"
 	"tresorbot/internal/ownerauth"
 	"tresorbot/internal/runnertransport"
@@ -18,15 +21,16 @@ import (
 )
 
 type Application struct {
-	Handler   http.Handler
-	store     *store.Store
-	memory    *memory.Store
-	bottools  *bottools.Handler
-	sessions  *ownerauth.Store
-	hub       *runnertransport.Hub
-	dispatch  *dispatchLoop
-	closeOnce sync.Once
-	closeErr  error
+	Handler      http.Handler
+	store        *store.Store
+	memory       *memory.Store
+	bottools     *bottools.Handler
+	sessions     *ownerauth.Store
+	hub          *runnertransport.Hub
+	dispatch     *dispatchLoop
+	environments *environments.Manager
+	closeOnce    sync.Once
+	closeErr     error
 }
 
 func Open(c config.Config) (*Application, error) {
@@ -104,10 +108,23 @@ func Open(c config.Config) (*Application, error) {
 	app.dispatch = newDispatchLoop(s, app.hub, func(ctx context.Context, a store.Assignment) error {
 		return app.hub.Cancel(ctx, a.RunnerID, a.ID, a.Epoch)
 	}, cleanup)
-	h := api.New(s, m, api.Options{OwnerAuth: sessions, AdminPassword: c.AdminPassword, BindAddr: c.BindAddr, MemoryRoot: c.MemoryRoot, RunnerStatus: app.hub.Status, RunnerChanged: app.hub.Invalidate, TasksChanged: app.dispatch.Wake})
+	// Inputs come up after the store, recovery and the dispatcher, because intake
+	// admits tasks and the reply pump reads settled ones. A failure here is logged
+	// and the subsystem stays off: a missing node binary or a broken input
+	// catalogue must not stop the owner's dashboard from starting.
+	app.environments, err = environments.Open(environments.OptionsFromConfig(c, s, app.dispatch.Wake))
+	if err != nil {
+		log.Printf("inputs disabled: %v", err)
+		app.environments = nil
+	}
+
+	h := api.New(s, m, api.Options{OwnerAuth: sessions, AdminPassword: c.AdminPassword, BindAddr: c.BindAddr, MemoryRoot: c.MemoryRoot, RunnerStatus: app.hub.Status, RunnerChanged: app.hub.Invalidate, TasksChanged: app.dispatch.Wake, Environments: app.environments, EnvironmentsDir: environmentDir(c)})
 	mux := http.NewServeMux()
 	if service != nil {
 		mux.Handle("/integration/", service)
+	}
+	if app.environments != nil {
+		mux.Handle(environments.IngressPrefix, app.environments.Ingress)
 	}
 	mux.Handle("/api/runner/tools/", app.nativeTools())
 	mux.Handle("/api/runner/connect", app.hub)
@@ -115,14 +132,58 @@ func Open(c config.Config) (*Application, error) {
 	app.Handler = mux
 	// Retry durable cleanup after restart even before a runner reconnects.
 	app.dispatch.Wake()
+	if app.environments != nil {
+		app.environments.Start(context.Background())
+	}
 	return app, nil
+}
+
+// IngressHandler serves only the webhook ingress prefix, for the optional
+// dedicated listener.
+//
+// A separate listener exists so the port an upstream posts to can be exposed to
+// the internet without exposing the owner dashboard and the integration bridge: a
+// listener that mounted the full handler would quietly undo that, so this one
+// answers 404 for everything else.
+func (a *Application) IngressHandler() http.Handler {
+	mux := http.NewServeMux()
+	if a.environments != nil {
+		mux.Handle(environments.IngressPrefix, a.environments.Ingress)
+	}
+	return mux
 }
 
 func (a *Application) Close() error {
 	a.closeOnce.Do(func() {
+		// Inputs stop first: the host holds upstream connections and in-flight
+		// admissions that read the store, so tearing the store down underneath them
+		// would turn an orderly shutdown into a burst of misleading errors.
+		var environmentsErr error
+		if a.environments != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), environmentsShutdownTimeout)
+			environmentsErr = a.environments.Close(ctx)
+			cancel()
+		}
 		hubErr := a.hub.Close()
 		a.dispatch.Close()
-		a.closeErr = errors.Join(hubErr, a.sessions.Close(), a.memory.Close(), a.store.Close())
+		a.closeErr = errors.Join(environmentsErr, hubErr, a.sessions.Close(), a.memory.Close(), a.store.Close())
 	})
 	return a.closeErr
+}
+
+// environmentsShutdownTimeout bounds adapter shutdown. An adapter that ignores its stop
+// notification is killed rather than allowed to hold Sun open.
+const environmentsShutdownTimeout = 20 * time.Second
+
+// environmentDir reports the input catalogue path for the dashboard, without requiring
+// inputs to be enabled.
+func environmentDir(c config.Config) string {
+	if c.Environments != nil && c.Environments.Dir != "" {
+		return c.Environments.Dir
+	}
+	dir, err := environments.Dir()
+	if err != nil {
+		return ""
+	}
+	return dir
 }

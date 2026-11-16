@@ -2,7 +2,7 @@
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>TresorBot</title><style>
 :root{font:16px system-ui,sans-serif;color:#202a36;background:#f5f7fa}body{max-width:980px;margin:2rem auto;padding:0 1rem}header{display:flex;align-items:center;justify-content:space-between}nav{display:flex;gap:.5rem;flex-wrap:wrap;margin:1rem 0}button,select,input,textarea{font:inherit;padding:.55rem .7rem;border:1px solid #cbd3df;border-radius:6px;background:white}button{cursor:pointer}button.active{background:#243b55;color:white}section{background:white;border:1px solid #dce2e9;border-radius:8px;padding:1rem;margin:1rem 0}label{display:block;margin:.7rem 0}label input:not([type=checkbox]),label textarea,label select{display:block;width:100%;margin-top:.3rem;box-sizing:border-box}textarea{min-height:8rem}small{color:#59697b}#status{min-height:1.5em;color:#43566b}li{margin:.35rem 0}
 </style></head><body><header><h1>TresorBot owner</h1><button id="session" hidden></button></header><nav id="tabs"></nav><p id="status" role="status" aria-live="polite"></p><main id="main"></main><script>
-(()=>{'use strict';const names=['Bots','Needs attention','Earth','Memory','Settings'],tabs=document.querySelector('#tabs'),main=document.querySelector('#main'),status=document.querySelector('#status'),session=document.querySelector('#session');let csrf='',authenticated=false,current='Bots';const el=(tag,text)=>{const n=document.createElement(tag);if(text!==undefined)n.textContent=text;return n},panel=t=>{main.replaceChildren(el('h2',t));return main},say=t=>status.textContent=t||'';
+(()=>{'use strict';const names=['Bots','Needs attention','Earth','Environments','Memory','Settings'],tabs=document.querySelector('#tabs'),main=document.querySelector('#main'),status=document.querySelector('#status'),session=document.querySelector('#session');let csrf='',authenticated=false,current='Bots';const el=(tag,text)=>{const n=document.createElement(tag);if(text!==undefined)n.textContent=text;return n},panel=t=>{main.replaceChildren(el('h2',t));return main},say=t=>status.textContent=t||'';
 async function req(path,o={}){const method=o.method||'GET',headers={...(o.headers||{})};if(o.body!==undefined)headers['Content-Type']='application/json';if(method!=='GET'){headers['X-CSRF-Token']=csrf;headers.Origin=location.origin}const r=await fetch('/api'+path,{...o,headers,credentials:'same-origin'});let d;try{d=await r.json()}catch{d={}}if(!r.ok)throw Error(d.error||`Request failed (${r.status})`);return d}const send=(p,m,v)=>req(p,{method:m,body:JSON.stringify(v)});function btn(parent,label,fn){const b=el('button',label);b.onclick=async()=>{try{await fn()}catch(e){say(e.message)}};parent.append(b);return b}// adapterNames lists the adapters offered by the selected Earth. When no Earth is
 // chosen it unions every runner's catalogue, and it always keeps the bot's
 // current adapter so an existing choice is never silently dropped.
@@ -17,7 +17,7 @@ function adapterNames(earths,runnerId,current){
   return [...names].sort();
 }
 function field(parent,label,value='',tag='input'){const l=el('label',label),i=el(tag);i.value=value??'';l.append(i);parent.append(l);return i}
-function render(){say('');tabs.replaceChildren();for(const n of names){const b=btn(tabs,n,()=>{current=n;render()});if(n===current)b.classList.add('active')}({Bots:bots,'Needs attention':attention,Earth:runners,Memory:memory,Settings:settings})[current]().catch(e=>say(e.message))}
+function render(){say('');tabs.replaceChildren();for(const n of names){const b=btn(tabs,n,()=>{current=n;render()});if(n===current)b.classList.add('active')}({Bots:bots,'Needs attention':attention,Earth:runners,Environments:environments,Memory:memory,Settings:settings})[current]().catch(e=>say(e.message))}
 async function bots(){const root=panel('Bots and contacts');const earths=await req('/runners');const create=el('section'),newAlias=field(create,'New bot alias'),newName=field(create,'Display name'),newAdapter=el('select');for(const name of adapterNames(earths,null))newAdapter.append(new Option(name,name));const newAdapterLabel=el('label','Agent adapter');newAdapterLabel.append(newAdapter);create.append(newAdapterLabel);btn(create,'Create bot',async()=>{if(!newAlias.value.trim()||!newName.value.trim())throw Error('Enter an alias and display name.');await send('/bots','POST',{alias:newAlias.value.trim(),name:newName.value.trim(),adapter:newAdapter.value,enabled:true});render()});root.append(create);const allBots=await req('/bots');root.append(el('p','Configure the exact same alias manually in Tresor; Sun does not create routes.'));for(const b of allBots){const c=el('section');c.append(el('h3',`${b.name||b.alias} · ${b.alias}`));if(b.id)c.append(el('small','Details: '+b.id));for(const [k,label,tag] of [['alias','Alias','input'],['name','Name','input'],['instructions','Instructions','textarea'],['workspace','Workspace override (optional)','input']]){const i=field(c,label,b[k],tag);if(k==='workspace'){const inherited=earths.find(r=>r.id===b.runner_id)?.default_workspace;i.placeholder=inherited||'Leave empty to use the Earth default'}i.onblur=async()=>{if(i.value===(b[k]||''))return;try{const x=await send('/bots/'+encodeURIComponent(b.id),'PUT',{revision:b.revision,[k]:i.value});b.revision=x.revision??b.revision;b[k]=i.value;say('Saved')}catch(e){say(e.message)}}}const rl=el('label','Earth'),rs=el('select');rs.append(new Option('No Earth selected',''));for(const r of earths)rs.append(new Option(r.name,r.id));rs.value=b.runner_id||'';rl.append(rs);c.append(rl);rs.onchange=async()=>{try{const x=await send('/bots/'+encodeURIComponent(b.id),'PUT',{revision:b.revision,runner_id:rs.value});b.revision=x.revision??b.revision;b.runner_id=rs.value;say('Saved')}catch(e){say(e.message)}};const al=el('label','Agent adapter'),as=el('select');for(const name of adapterNames(earths,b.runner_id,b.adapter))as.append(new Option(name,name));as.value=b.adapter||'';al.append(as);c.append(al);as.onchange=async()=>{try{const x=await send('/bots/'+encodeURIComponent(b.id),'PUT',{revision:b.revision,adapter:as.value});b.revision=x.revision??b.revision;b.adapter=as.value;say('Saved')}catch(e){say(e.message);as.value=b.adapter||''}};for(const [k,label] of [['shared_write','Allow shared memory writes'],['enabled','Enabled']]){const l=el('label',label),i=el('input');i.type='checkbox';i.checked=!!b[k];l.append(i);c.append(l);i.onchange=async()=>{try{const x=await send('/bots/'+encodeURIComponent(b.id),'PUT',{revision:b.revision,[k]:i.checked});b.revision=x.revision??b.revision;b[k]=i.checked;say('Saved')}catch(e){say(e.message);i.checked=!!b[k]}}}c.append(el('h4','Contacts'));const list=el('ul');c.append(list);async function loadContacts(){list.replaceChildren();const rows=await req('/bots/'+encodeURIComponent(b.id)+'/contacts');for(const q of rows){const li=el('li');li.append(el('span',`${q.target} — ${q.description||''} `));btn(li,'Remove',async()=>{await send('/bots/'+encodeURIComponent(b.id)+'/contacts','PUT',{contacts:rows.filter(x=>x.target!==q.target)});loadContacts()});list.append(li)}}await loadContacts();const target=el('select');for(const other of allBots.filter(x=>x.id!==b.id))target.append(new Option(other.name+' ('+other.alias+')',other.id));c.append(target);const description=field(c,'Contact description');btn(c,'Add contact',async()=>{if(!target.value)throw Error('Create another bot first.');const rows=await req('/bots/'+encodeURIComponent(b.id)+'/contacts');await send('/bots/'+encodeURIComponent(b.id)+'/contacts','PUT',{contacts:[...rows,{target:target.value,description:description.value}]});await loadContacts()});btn(c,'Delete bot',async()=>{if(confirm('Delete '+b.name+'? Existing task evidence is retained.')){await req('/bots/'+encodeURIComponent(b.id),{method:'DELETE'});render()}});root.append(c)}}
 // Work is started by talking to a bot, so this tab reports only what needs a
 // decision: work that stopped, or a stop that never confirmed.
@@ -25,5 +25,135 @@ const attentionWording={failed:'Interrupted',needs_attention:'Stopped unexpected
 function since(iso){if(!iso)return '';const t=Date.parse(iso.replace(' ','T')+'Z');if(isNaN(t))return '';const m=Math.round((Date.now()-t)/60000);if(m<1)return 'just now';if(m<60)return m+(m===1?' minute ago':' minutes ago');const h=Math.round(m/60);if(h<24)return h+(h===1?' hour ago':' hours ago');const d=Math.round(h/24);return d+(d===1?' day ago':' days ago')}
 async function attention(){const root=panel('Needs attention'),rows=await req('/tasks?attention=1');if(!rows.length){root.append(el('p','Nothing needs attention.'));return}root.append(el('p','Work that did not finish. Acknowledging keeps it here as a reminder; dismissing removes it. Neither changes what already happened.'));for(const t of rows){const c=el('section'),state=String(t.state||'').toLowerCase(),seen=!!t.acknowledged_at;c.append(el('h3',attentionWording[state]||'Needs attention'));const meta=[t.bot_name||t.bot_id,since(t.updated_at)].filter(Boolean).join(' \u00b7 ');if(meta)c.append(el('small',meta));if(t.summary)c.append(el('p',t.summary));if(t.parent_id)c.append(el('small','Started by another bot'));if(seen)c.append(el('small','Acknowledged \u2014 kept as a reminder because changes may have been made'));const actions=el('div');if(!seen&&state!=='cancelling')btn(actions,'Acknowledge',async()=>{await send('/tasks/'+encodeURIComponent(t.id)+'/acknowledge','POST',{});attention()});if(state==='failed')btn(actions,'Retry',async()=>{if(!confirm('Retry may repeat side effects. Continue?'))return;await send('/tasks/'+encodeURIComponent(t.id)+'/retry','POST',{});attention()});btn(actions,'Dismiss',async()=>{if(!confirm('Remove this from the list? Any changes it already made will stay.'))return;await send('/tasks/'+encodeURIComponent(t.id)+'/dismiss','POST',{});attention()});c.append(actions);root.append(c)}}
 async function runners(){const root=panel('Earth');root.append(el('p','Register an Earth, issue its credential, and configure it to connect outbound. Revocation disconnects control; it does not prove processes have stopped.'));const name=field(root,'Earth name');btn(root,'Register Earth',async()=>{if(!name.value.trim())throw Error('Enter an Earth name.');await send('/runners','POST',{name:name.value.trim()});runners()});for(const r of await req('/runners')){const c=el('section');c.append(el('h3',r.name),el('p',r.revoked?'Revoked':(r.status||'Disconnected')));if(r.id)c.append(el('small','Earth ID: '+r.id));c.append(el('p','Default workspace: '+(r.default_workspace||'Not configured')),el('small','Edit the default on this Earth’s local setup page.'));if(!r.revoked){btn(c,'Issue or rotate credential',async()=>{if(!confirm('Issue a new credential? Any previous credential and connection will stop working.'))return;const issued=await send('/runners/'+encodeURIComponent(r.id)+'/credential','POST',{});const display=el('section');display.append(el('p','Copy this credential into Earth configuration. It is shown only now.'));const credential=field(display,'Earth token',issued.runner_token);credential.readOnly=true;const identity=field(display,'Earth ID',r.id);identity.readOnly=true;btn(display,'Dismiss credential',()=>display.remove());c.append(display)});btn(c,'Revoke',async()=>{if(confirm('Revoke this Earth? Existing processes may still be running.')){await req('/runners/'+encodeURIComponent(r.id)+'/revoke',{method:'POST'});runners()}})};root.append(c)}}
+// An environment is a surface the bot acts on in both directions: an IM thread, a
+// webhook tick. Each instance binds one installed environment to one bot, so the
+// same environment can feed several bots. Installing one is a CLI action (it is
+// this tab only configures instances of what is already installed.
+async function environments(){
+  const root=panel('Environments'),data=await req('/environments'),catalogue=data.catalogue||[];
+  root.append(el('p','An environment is a surface the bot interacts with: a chat, a pull request, a schedule. Each instance binds one installed environment to one bot, and an adapter can both raise events and receive the bot's results.'));
+  if(!data.enabled)root.append(el('p','Environments are turned off. Add an environments section to the Sun configuration and restart to enable them.'),el('small','Section: environments: { enabled: true }'));
+  if(!catalogue.length)root.append(el('p','No environments are installed.'),el('small','Install one with: tresorbot-sun environment install <https-url> --sha256 <digest>'));
+  for(const [name,message] of Object.entries(data.problems||{}))root.append(el('p','Input host: '+message));
+  const create=el('section');create.append(el('h3','Add an instance'));
+  const bots=await req('/bots');
+  const nameIn=field(create,'Instance name'),pick=el('select');
+  for(const info of catalogue)pick.append(new Option(info.name+(info.version?' '+info.version:''),info.name));
+  if(!catalogue.length)pick.append(new Option('No environments installed',''));
+  create.append(el('label','Input'),pick);
+  const botSel=el('select');for(const b of bots)botSel.append(new Option(b.name+' ('+b.alias+')',b.id));
+  create.append(el('label','Bot'),botSel);
+  const settingsBox=el('section');settingsBox.append(el('h3','Settings'));
+  // Settings are rendered from the input's own descriptors, so an input that adds
+  // a setting needs no change here. A secret is entered as a reference, never as
+  // the value: Sun resolves env:NAME at configure time and never stores it.
+  function renderSettings(){
+    settingsBox.replaceChildren(el('h3','Settings'));
+    const info=catalogue.find(x=>x.name===pick.value);
+    const fields={};
+    if(!info)return fields;
+    for(const d of (info.settings||[])){
+      let tag='input';
+      if(d.type==='bool')tag='input';
+      else if(d.type==='string_list')tag='textarea';
+      else if(d.type==='enum')tag='select';
+      const i=field(settingsBox,(d.title||d.key)+(d.required?' (required)':''),'',tag);
+      if(d.type==='bool')i.type='checkbox';
+      if(d.type==='enum'){for(const v of (d.values||[]))i.append(new Option(v,v));if(d.default)i.value=d.default}
+      if(d.sensitive){i.type='password';i.placeholder='env:VARIABLE_NAME';i.autocomplete='off'}
+      if(d.description)i.title=d.description;
+      if(d.type==='string_list')i.placeholder='One value per line';
+      if(d.type==='path')i.placeholder='Absolute path on Sun\u2019s host';
+      fields[d.key]={input:i,descriptor:d};
+      if(d.description)settingsBox.append(el('small',d.description));
+    }
+    return fields;
+  }
+  let fields=renderSettings();
+  pick.onchange=()=>{fields=renderSettings()};
+  function collect(){
+    const out={};
+    for(const [key,{input,descriptor}] of Object.entries(fields)){
+      if(descriptor.type==='bool'){out[key]=input.checked;continue}
+      const raw=input.value.trim();
+      if(raw===''){continue}
+      if(descriptor.type==='string_list'){out[key]=raw.split('\n').map(x=>x.trim()).filter(Boolean);continue}
+      out[key]=raw;
+    }
+    return out;
+  }
+  root.append(create,settingsBox);
+  btn(create,'Add instance',async()=>{
+    if(!nameIn.value.trim())throw Error('Enter an instance name.');
+    if(!pick.value)throw Error('Install an input first.');
+    if(!botSel.value)throw Error('Create a bot first.');
+    await send('/environments','POST',{name:nameIn.value.trim(),input:pick.value,bot_id:botSel.value,enabled:true,settings:collect()});
+    say('Instance added');environments();
+  });
+  const instances=data.instances||[];
+  if(!instances.length)root.append(el('p','No instances configured.'));
+  for(const inst of instances){
+    const c=el('section');
+    c.append(el('h3',inst.name+' → '+inst.input));
+    c.append(el('small',(inst.enabled?'Enabled':'Disabled')+' · bot '+inst.bot_id+(inst.webhook_capable?' · webhook':'')+' · updated '+(inst.updated_at||'')));
+    const l=el('label','Enabled'),toggle=el('input');toggle.type='checkbox';toggle.checked=!!inst.enabled;l.append(toggle);c.append(l);
+    toggle.onchange=async()=>{try{const x=await send('/environments/'+encodeURIComponent(inst.name),'PUT',{revision:inst.revision,enabled:toggle.checked});inst.revision=x.revision??inst.revision;inst.enabled=toggle.checked;say('Saved')}catch(e){say(e.message);toggle.checked=!!inst.enabled}};
+    const box=el('section');box.append(el('h4','Settings'));
+    const edit={};
+    for(const d of (inst.declared||[])){
+      let tag='input';
+      if(d.type==='string_list')tag='textarea';
+      else if(d.type==='enum')tag='select';
+      const current=inst.settings?.[d.key];
+      const value=d.type==='string_list'?(Array.isArray(current)?current.join('\n'):(current??'')):(d.type==='bool'?'':(current??''));
+      const i=field(box,(d.title||d.key)+(d.required?' (required)':''),value,tag);
+      if(d.type==='bool'){i.type='checkbox';i.checked=!!current}
+      // The value is applied after the options exist: assigning a select's value
+      // before it has options leaves nothing selected.
+      if(d.type==='enum'){for(const v of (d.values||[]))i.append(new Option(v,v));i.value=current??''}
+      if(d.sensitive){i.type='password';i.autocomplete='off';i.placeholder='env:VARIABLE_NAME (leave blank to keep)'}
+      if(d.description)i.title=d.description;
+      edit[d.key]={input:i,descriptor:d};
+    }
+    c.append(box);
+    btn(box,'Save settings',async()=>{
+      const settings={};
+      for(const [key,{input,descriptor}] of Object.entries(edit)){
+        if(descriptor.type==='bool'){settings[key]=input.checked;continue}
+        const raw=input.value.trim();
+        // A blank secret means "unchanged", so saving an unrelated setting cannot
+        // wipe a credential the owner cannot see.
+        if(raw===''){if(descriptor.sensitive)continue;if(!descriptor.required){continue}}
+        settings[key]=descriptor.type==='string_list'?raw.split('\n').map(x=>x.trim()).filter(Boolean):raw;
+      }
+      const x=await send('/environments/'+encodeURIComponent(inst.name),'PUT',{revision:inst.revision,settings});
+      inst.revision=x.revision??inst.revision;say('Saved');environments();
+    });
+    const actions=el('div');
+    if(inst.webhook_capable){
+      btn(actions,'Show webhook URL',async()=>{
+        const t=await send('/environments/'+encodeURIComponent(inst.name)+'/token','POST',{});
+        const display=el('section');
+        display.append(el('p','Post to this URL. The credential is sent as an Authorization: Bearer header and is shown only here — Sun derives it, it is not stored.'));
+        const u=field(display,'URL',location.origin+t.path);u.readOnly=true;
+        const tok=field(display,'Credential',t.token);tok.readOnly=true;
+        btn(display,'Dismiss',()=>display.remove());
+        c.append(display);
+      });
+    }
+    btn(actions,'Recent events',async()=>{
+      const d=await req('/environments/'+encodeURIComponent(inst.name)+'/events'),list=el('ul');
+      if(!d.events?.length)list.append(el('li','Nothing received yet.'));
+      for(const e of (d.events||[]))list.append(el('li',`${e.kind||'event'} ${e.event_id}${e.task_id?' → task':''}${e.rejected_reason?' rejected: '+e.rejected_reason:''} · ${e.received_at||''}`));
+      const wrap=el('section');wrap.append(el('h4','Recent events'),list);c.append(wrap);
+    });
+    btn(actions,'Delete instance',async()=>{
+      if(!confirm('Delete instance '+inst.name+'? Events already received and their tasks are kept.'))return;
+      await req('/environments/'+encodeURIComponent(inst.name),{method:'DELETE'});say('Deleted');environments();
+    });
+    c.append(actions);
+    root.append(c);
+  }
+}
 async function memory(){const root=panel('Memory');root.append(el('p','Choose shared memory or a bot’s private memory.'));const scope=el('select');scope.append(new Option('Shared','shared'));for(const b of await req('/bots'))scope.append(new Option('Bot: '+b.name,b.id));root.append(el('label','Memory scope'),scope);const files=el('ul'),path=field(root,'Document path'),content=field(root,'Document content','','textarea');let revision='';function reset(){revision='';path.value='';content.value='';files.replaceChildren()}async function list(){files.replaceChildren();for(const x of await req('/memory?scope='+encodeURIComponent(scope.value))){const li=el('li');btn(li,x.path,async()=>{path.value=x.path;await load()});files.append(li)}}async function load(){if(!path.value.trim())throw Error('Enter a document path.');const d=await req('/memory?scope='+encodeURIComponent(scope.value)+'&path='+encodeURIComponent(path.value));content.value=d.content??'';revision=d.revision??'';say('Document loaded')}scope.onchange=()=>{reset();list().catch(e=>say(e.message))};path.onchange=()=>{revision='';content.value=''};root.append(el('h3','Files'),files);btn(root,'Load document',load);btn(root,'Save document',async()=>{if(!path.value.trim())throw Error('Enter a document path.');try{const d=await send('/memory?scope='+encodeURIComponent(scope.value),'PUT',{path:path.value,expected_revision:revision,content:content.value,operation_id:crypto.randomUUID()});revision=d.revision??revision;say('Document saved');await list()}catch(e){say(e.message+' — editor text retained')}});await list()}
 async function settings(){const root=panel('Settings'),[h,s]=await Promise.all([req('/health'),req('/settings')]);root.append(el('p','Service health: '+(h.status||'Available')),el('p','Owner session: '+(authenticated?'Signed in':'Local access')),el('p','Records: '+(s.retention||'Retained')),el('p','Listening address: '+(s.bind_addr||'Not reported')));const box=el('section');box.append(el('h3','Streaming content'),el('p','These options shape streaming responses only; the client’s stream request always governs the transport.'));const checks=[['stream_heartbeat','Send waiting heartbeats while the bot works'],['stream_show_intermediate','Show intermediate turn texts (default: final answer only)']],boxes={};for(const [k,label] of checks){const l=el('label',label),i=el('input');i.type='checkbox';i.checked=!!s[k];l.append(i);box.append(l);boxes[k]=i}const activity=el('label','Progress wording (shown while the bot works; {label} is the current step)'),activityIn=el('input');activityIn.type='text';activityIn.value=s.stream_activity||'Waiting for {label}\u2026';activityIn.maxLength=200;activity.append(activityIn);box.append(activity);btn(box,'Save streaming options',async()=>{const d=await send('/settings','PUT',{stream_heartbeat:boxes.stream_heartbeat.checked,stream_show_intermediate:boxes.stream_show_intermediate.checked,stream_activity:activityIn.value});for(const k in boxes)boxes[k].checked=!!d[k];if(d.stream_activity)activityIn.value=d.stream_activity;say('Saved')});root.append(box)}async function start(){const s=await req('/auth/status');csrf=s.csrf_token||'';authenticated=!!s.authenticated;session.hidden=!authenticated;session.textContent='Log out';session.onclick=async()=>{try{await send('/auth/logout','POST',{});authenticated=false;await start()}catch(e){say(e.message)}};if(!authenticated&&s.password_required){tabs.replaceChildren();main.replaceChildren();const f=el('section');f.append(el('h2','Owner sign in'));const p=field(f,'Password');p.type='password';btn(f,'Log in',async()=>{await send('/auth/login','POST',{password:p.value});await start()});main.append(f);return}render()}start().catch(e=>say(e.message));})();</script></body></html>

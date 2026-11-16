@@ -88,6 +88,33 @@ type Config struct {
 	// were present. They are now ignored: adapter settings live beside the
 	// adapter. Earth logs one diagnostic pointing at `agent install`.
 	LegacyAgents bool `yaml:"-"`
+	// Inputs configures Sun's input-side extensions. Absent means disabled, so an
+	// existing deployment keeps behaving exactly as it did: no host process, no
+	// ingress listener, no extra database tables.
+	Environments *EnvironmentsConfig `yaml:"environments,omitempty"`
+}
+
+// EnvironmentsConfig describes Sun's input-side extension runtime.
+//
+// Instances are deliberately NOT configured here. They are plural per input
+// adapter and are edited from the dashboard, which needs a per-instance revision
+// so two browser tabs cannot overwrite each other; a nested YAML map cannot
+// express that. This section configures the runtime only.
+type EnvironmentsConfig struct {
+	Enabled bool `yaml:"enabled"`
+	// Dir is the input catalogue. Empty resolves to ~/.tresorbot/inputs.
+	Dir string `yaml:"dir,omitempty"`
+	// StateDir holds the materialized host. Empty resolves beside the catalogue.
+	StateDir string `yaml:"state_dir,omitempty"`
+	// NodePath runs the host. Empty means "node" from PATH.
+	NodePath string `yaml:"node_path,omitempty"`
+	// IngressAddr gives webhook ingress its own listener, so a port can be exposed
+	// to the internet without also exposing the owner dashboard and the
+	// integration bridge that share bind_addr.
+	IngressAddr string `yaml:"ingress_addr,omitempty"`
+	// MaxPendingPerBot bounds queued input work per bot. An upstream firehose must
+	// not be able to queue unbounded work behind a slow runner.
+	MaxPendingPerBot int `yaml:"max_pending_per_bot,omitempty"`
 }
 
 // AgentsDir is where installed adapters live. It is not configurable: adapters
@@ -198,6 +225,9 @@ func Load(path, role string) (Config, error) {
 		if !loopback && c.AdminPassword == "" {
 			return Config{}, fmt.Errorf("non-loopback bind_addr requires admin_password")
 		}
+		if err := c.validateEnvironments(filepath.Dir(path), loopback); err != nil {
+			return Config{}, err
+		}
 	}
 	if role == "earth" {
 		if strings.TrimSpace(c.SunURL) == "" {
@@ -272,4 +302,61 @@ func Load(path, role string) (Config, error) {
 
 	}
 	return c, nil
+}
+
+// validateEnvironments normalizes and checks Sun's input-side configuration.
+//
+// An absent section leaves inputs off. A present-but-disabled section is allowed
+// and normalized anyway, so an operator can prepare the paths before turning the
+// feature on and see one clear error rather than two.
+func (c *Config) validateEnvironments(baseDir string, loopback bool) error {
+	if c.Environments == nil {
+		return nil
+	}
+	in := c.Environments
+	if in.MaxPendingPerBot < 0 {
+		return fmt.Errorf("environments.max_pending_per_bot cannot be negative")
+	}
+	if in.MaxPendingPerBot == 0 {
+		in.MaxPendingPerBot = 100
+	}
+	// The cap is bounded from above as well: a number this large is a typo, and
+	// the point of the setting is to bound a queue.
+	if in.MaxPendingPerBot > 10000 {
+		return fmt.Errorf("environments.max_pending_per_bot must be at most 10000")
+	}
+	for _, field := range []struct {
+		name  string
+		value *string
+	}{
+		{"dir", &in.Dir},
+		{"state_dir", &in.StateDir},
+		{"node_path", &in.NodePath},
+		{"ingress_addr", &in.IngressAddr},
+	} {
+		if strings.ContainsAny(*field.value, "\r\n\x00") || len(*field.value) > 4096 {
+			return fmt.Errorf("invalid environments.%s", field.name)
+		}
+	}
+	for _, field := range []*string{&in.Dir, &in.StateDir} {
+		if *field != "" && !filepath.IsAbs(*field) {
+			*field = filepath.Join(baseDir, *field)
+		}
+	}
+	if strings.TrimSpace(in.IngressAddr) != "" {
+		host, port, err := net.SplitHostPort(in.IngressAddr)
+		if err != nil {
+			return fmt.Errorf("invalid environments.ingress_addr")
+		}
+		n, e := strconv.Atoi(port)
+		if e != nil || n < 1 || n > 65535 || strings.ContainsAny(host, " \r\n") {
+			return fmt.Errorf("invalid environments.ingress_addr")
+		}
+		// A public ingress port with a password-free owner dashboard on the same
+		// host is a foot-gun, but ingress has its own per-instance credentials, so
+		// only the loopback requirement for a password-free bind_addr applies — and
+		// that was already enforced above for bind_addr itself.
+		_ = loopback
+	}
+	return nil
 }

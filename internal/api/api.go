@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"tresorbot/internal/environments"
 	"tresorbot/internal/memory"
 	"tresorbot/internal/ownerauth"
 	"tresorbot/internal/store"
@@ -27,6 +28,12 @@ type Options struct {
 	RunnerChanged                       func(string)
 	TasksChanged                        func()
 	OwnerAuth                           *ownerauth.Store
+	// Environments is Sun's environment subsystem, or nil when it is disabled. Nil is a
+	// supported state, not an error: the dashboard must render for an owner who
+	// has never configured an input.
+	Environments *environments.Manager
+	// EnvironmentsDir is the catalogue path shown in the dashboard.
+	EnvironmentsDir string
 }
 type API struct {
 	s        *store.Store
@@ -144,6 +151,8 @@ func (a *API) route(w http.ResponseWriter, r *http.Request) {
 		a.settings(w, r)
 	case "events":
 		a.events(w, r)
+	case "environments":
+		a.environmentsRoute(w, r, parts)
 	default:
 		writeErr(w, 404, "not found")
 	}

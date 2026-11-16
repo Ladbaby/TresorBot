@@ -13,6 +13,8 @@ package agents
 import (
 	"encoding/json"
 	"fmt"
+
+	"tresorbot/internal/settingspec"
 )
 
 // ProtocolVersion is the contract revision. It is exchanged in the hello
@@ -84,28 +86,22 @@ type AdapterInfo struct {
 	Settings []SettingDescriptor `json:"settings,omitempty"`
 }
 
-// SettingType enumerates the value shapes Earth can validate and render.
-type SettingType string
-
-const (
-	SettingString     SettingType = "string"
-	SettingBool       SettingType = "bool"
-	SettingInt        SettingType = "int"
-	SettingPath       SettingType = "path"
-	SettingStringList SettingType = "string_list"
-	SettingEnum       SettingType = "enum"
+// Settings are described by the shared vocabulary in internal/settingspec, so an
+// agent adapter and an input adapter cannot disagree about what a setting is.
+// These aliases keep the existing agent-side names working unchanged.
+type (
+	SettingType       = settingspec.Type
+	SettingDescriptor = settingspec.Descriptor
 )
 
-// SettingDescriptor declares one adapter setting. Earth validates against this
-// without knowing what the adapter does with the value.
-type SettingDescriptor struct {
-	Key         string      `json:"key"`
-	Type        SettingType `json:"type"`
-	Required    bool        `json:"required,omitempty"`
-	Description string      `json:"description,omitempty"`
-	Default     any         `json:"default,omitempty"`
-	Values      []string    `json:"values,omitempty"`
-}
+const (
+	SettingString     = settingspec.String
+	SettingBool       = settingspec.Bool
+	SettingInt        = settingspec.Int
+	SettingPath       = settingspec.Path
+	SettingStringList = settingspec.StringList
+	SettingEnum       = settingspec.Enum
+)
 
 // HelloResult is the handshake reply. Earth refuses to dispatch to a host that
 // reports a different protocol version.

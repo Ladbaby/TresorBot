@@ -11,6 +11,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"tresorbot/internal/settingspec"
 )
 
 // ManifestName is the descriptor file inside each adapter directory.
@@ -20,10 +22,10 @@ const ManifestName = "agent.json"
 // and by the host for discovery; both must agree, so the shape is versioned with
 // the protocol.
 type Manifest struct {
-	Name        string              `json:"name"`
-	Version     string              `json:"version"`
-	DisplayName string              `json:"display_name,omitempty"`
-	Description string              `json:"description,omitempty"`
+	Name        string `json:"name"`
+	Version     string `json:"version"`
+	DisplayName string `json:"display_name,omitempty"`
+	Description string `json:"description,omitempty"`
 	// Entry is the adapter module, relative to the manifest directory.
 	Entry string `json:"entry"`
 	// Protocol is the host protocol the adapter was written against.
@@ -180,122 +182,18 @@ func ValidAdapterName(name string) bool {
 	return true
 }
 
-// Validate checks one setting descriptor.
-func (s SettingDescriptor) Validate() error {
-	if s.Key == "" || len(s.Key) > 64 {
-		return fmt.Errorf("invalid setting key %q", s.Key)
-	}
-	switch s.Type {
-	case SettingString, SettingBool, SettingInt, SettingPath, SettingStringList:
-	case SettingEnum:
-		if len(s.Values) == 0 {
-			return fmt.Errorf("setting %q is an enum without values", s.Key)
-		}
-	default:
-		return fmt.Errorf("setting %q has unknown type %q", s.Key, s.Type)
-	}
-	return nil
+// Setting validation and normalisation live in internal/settingspec, shared with
+// the input-side extension kind. These wrappers keep the agent package's callers
+// unchanged while leaving exactly one definition of what a setting is.
+
+// ValidateSet checks a list of descriptors, reporting the first invalid one.
+func ValidateSet(descriptors []SettingDescriptor) error {
+	return settingspec.ValidateSet(descriptors)
 }
 
 // Normalize validates values against the declared descriptors and fills in
-// defaults. Unknown keys are rejected so a typo in earth.yaml is reported
-// instead of silently ignored.
+// defaults. Unknown keys are rejected so a typo is reported instead of silently
+// ignored.
 func Normalize(descriptors []SettingDescriptor, values map[string]any) (map[string]any, error) {
-	out := make(map[string]any, len(descriptors))
-	known := make(map[string]SettingDescriptor, len(descriptors))
-	for _, d := range descriptors {
-		if err := d.Validate(); err != nil {
-			return nil, err
-		}
-		known[d.Key] = d
-	}
-	for k := range values {
-		if _, ok := known[k]; !ok {
-			return nil, fmt.Errorf("unknown setting %q", k)
-		}
-	}
-	for _, d := range descriptors {
-		v, present := values[d.Key]
-		if !present || v == nil {
-			if d.Default != nil {
-				out[d.Key] = d.Default
-				continue
-			}
-			if d.Required {
-				return nil, fmt.Errorf("setting %q is required", d.Key)
-			}
-			continue
-		}
-		coerced, err := d.coerce(v)
-		if err != nil {
-			return nil, err
-		}
-		out[d.Key] = coerced
-	}
-	return out, nil
-}
-
-func (s SettingDescriptor) coerce(v any) (any, error) {
-	switch s.Type {
-	case SettingString, SettingPath:
-		str, ok := v.(string)
-		if !ok {
-			return nil, fmt.Errorf("setting %q must be a string", s.Key)
-		}
-		if s.Type == SettingPath && str != "" && !filepath.IsAbs(str) {
-			return nil, fmt.Errorf("setting %q must be an absolute path", s.Key)
-		}
-		return str, nil
-	case SettingBool:
-		b, ok := v.(bool)
-		if !ok {
-			return nil, fmt.Errorf("setting %q must be a boolean", s.Key)
-		}
-		return b, nil
-	case SettingInt:
-		switch n := v.(type) {
-		case int:
-			return n, nil
-		case int64:
-			return n, nil
-		case float64:
-			if float64(int64(n)) != n {
-				return nil, fmt.Errorf("setting %q must be an integer", s.Key)
-			}
-			return int64(n), nil
-		default:
-			return nil, fmt.Errorf("setting %q must be an integer", s.Key)
-		}
-	case SettingStringList:
-		list, ok := v.([]any)
-		if !ok {
-			if ls, ok := v.([]string); ok {
-				out := make([]string, len(ls))
-				copy(out, ls)
-				return out, nil
-			}
-			return nil, fmt.Errorf("setting %q must be a list of strings", s.Key)
-		}
-		out := make([]string, 0, len(list))
-		for _, item := range list {
-			str, ok := item.(string)
-			if !ok {
-				return nil, fmt.Errorf("setting %q must be a list of strings", s.Key)
-			}
-			out = append(out, str)
-		}
-		return out, nil
-	case SettingEnum:
-		str, ok := v.(string)
-		if !ok {
-			return nil, fmt.Errorf("setting %q must be a string", s.Key)
-		}
-		for _, allowed := range s.Values {
-			if str == allowed {
-				return str, nil
-			}
-		}
-		return nil, fmt.Errorf("setting %q must be one of %s", s.Key, strings.Join(s.Values, ", "))
-	}
-	return nil, fmt.Errorf("setting %q has unknown type", s.Key)
+	return settingspec.Normalize(descriptors, values)
 }
