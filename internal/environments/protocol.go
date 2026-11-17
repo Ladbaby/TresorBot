@@ -21,14 +21,22 @@ const MaxRecordBytes = 8 << 20
 
 // Methods Sun sends to the input host.
 const (
-	MethodHello    = "environment/hello"
-	MethodReload   = "environment/reload"
-	MethodConfig   = "environment/config"
-	MethodStart    = "environment/start"
-	MethodStop     = "environment/stop"
-	MethodWebhook  = "environment/webhook"
-	MethodDeliver  = "environment/deliver"
-	MethodShutdown = "environment/shutdown"
+	MethodHello   = "environment/hello"
+	MethodReload  = "environment/reload"
+	MethodConfig  = "environment/config"
+	MethodStart   = "environment/start"
+	MethodStop    = "environment/stop"
+	MethodWebhook = "environment/webhook"
+	MethodDeliver = "environment/deliver"
+	// MethodToolsList asks an adapter which tools it exposes. It is separate from
+	// definitions because the tool catalogue is fetched when the model searches,
+	// not when the session starts: the MCP bridge caches /definitions for the whole
+	// process, so a tool enabled mid-session would otherwise never appear.
+	MethodToolsList = "environment/tools_list"
+	// MethodToolsCall runs one tool. Sun sends its own id so a retried call can be
+	// recognised by the adapter rather than run twice.
+	MethodToolsCall = "environment/tools_call"
+	MethodShutdown  = "environment/shutdown"
 )
 
 // Notifications the host sends to Sun.
@@ -48,6 +56,7 @@ const (
 	CodeProtocol           = "protocol_mismatch"
 	CodeOverloaded         = "overloaded"
 	CodeNotCapable         = "not_capable"
+	CodeUnknownTool        = "unknown_tool"
 	CodeStartFailed        = "start_failed"
 )
 
@@ -197,6 +206,50 @@ type WebhookParams struct {
 	// BodyBase64 carries the raw bytes, because a signature is computed over
 	// bytes and not over a decoded string.
 	BodyBase64 string `json:"body_base64"`
+}
+
+// ToolsListParams asks one instance which tools it exposes.
+//
+// Discovery is per instance rather than per adapter because two instances of the
+// same adapter are two independent surfaces: a cron instance switched off must
+// not contribute tools.
+type ToolsListParams struct {
+	Instance string `json:"instance"`
+}
+
+// ToolDefinition is one tool an adapter offers.
+//
+// Parameters is carried as raw JSON on purpose: Sun validates it against a
+// restricted schema subset (see validateToolSchema) before it can reach a
+// provider. Decoding it into a typed struct here would let an unsupported
+// construct through unexamined.
+type ToolDefinition struct {
+	Name        string          `json:"name"`
+	Description string          `json:"description"`
+	Parameters  json.RawMessage `json:"parameters,omitempty"`
+}
+
+// ToolsListResult is the adapter's catalogue for one instance.
+type ToolsListResult struct {
+	Tools []ToolDefinition `json:"tools"`
+}
+
+// ToolsCallParams runs one tool on one instance.
+//
+// CallID is Sun's, not the model's: the model never sees it. It exists so a
+// retried call can be recognised as the same call rather than run twice, which
+// matters for tools that act on the world.
+type ToolsCallParams struct {
+	Instance  string          `json:"instance"`
+	Name      string          `json:"name"`
+	Arguments json.RawMessage `json:"arguments,omitempty"`
+	CallID    string          `json:"call_id"`
+}
+
+// ToolsCallResult is a tool's answer. Result is deliberately untyped: a tool may
+// return a string or a structure, and Sun bounds its size rather than its shape.
+type ToolsCallResult struct {
+	Result json.RawMessage `json:"result,omitempty"`
 }
 
 // WebhookResult reports whether the adapter took ownership of the request. A

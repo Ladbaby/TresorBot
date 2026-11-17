@@ -21,10 +21,13 @@ import (
 )
 
 type Application struct {
-	Handler      http.Handler
-	store        *store.Store
-	memory       *memory.Store
-	bottools     *bottools.Handler
+	Handler  http.Handler
+	store    *store.Store
+	memory   *memory.Store
+	bottools *bottools.Handler
+	// bridge is the environment tool catalog, created lazily by newTools so the
+	// Application literal does not need to know whether environments are enabled.
+	bridge       *environmentBridge
 	sessions     *ownerauth.Store
 	hub          *runnertransport.Hub
 	dispatch     *dispatchLoop
@@ -92,6 +95,9 @@ func Open(c config.Config) (*Application, error) {
 		s.Close()
 		return nil, fmt.Errorf("open owner sessions: %w", err)
 	}
+	// bottools is replaced by newTools() once environments are open, because the
+	// bridge needs the Application it belongs to. It is set here so any path that
+	// runs before that point still has a working handler.
 	app := &Application{store: s, memory: m, sessions: sessions, bottools: bottools.New(s, m)}
 	registry, service, err := app.integration(c)
 	if err != nil {
@@ -114,9 +120,13 @@ func Open(c config.Config) (*Application, error) {
 	// catalogue must not stop the owner's dashboard from starting.
 	app.environments, err = environments.Open(environments.OptionsFromConfig(c, s, app.dispatch.Wake))
 	if err != nil {
-		log.Printf("inputs disabled: %v", err)
+		log.Printf("environments disabled: %v", err)
 		app.environments = nil
 	}
+	// Rebuilt now that environments may exist: this is the handler every path
+	// shares, and it must carry the tool bridge or the meta-tools would claim no
+	// environments are enabled.
+	app.bottools = app.newTools()
 
 	h := api.New(s, m, api.Options{OwnerAuth: sessions, AdminPassword: c.AdminPassword, BindAddr: c.BindAddr, MemoryRoot: c.MemoryRoot, RunnerStatus: app.hub.Status, RunnerChanged: app.hub.Invalidate, TasksChanged: app.dispatch.Wake, Environments: app.environments, EnvironmentsDir: environmentDir(c)})
 	mux := http.NewServeMux()

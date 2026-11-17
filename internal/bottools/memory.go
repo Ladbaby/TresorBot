@@ -28,13 +28,24 @@ type Request struct {
 	Reconcile         bool
 }
 type Handler struct {
-	s  *store.Store
-	m  *memory.Store
-	mu sync.Mutex
+	s *store.Store
+	m *memory.Store
+	// bridge connects the meta-tools to the environment runtime. Nil means no
+	// environment subsystem is configured, which is the default, so every
+	// environment tool reports that rather than panicking.
+	bridge ToolBridge
+	mu     sync.Mutex
 }
 
 func New(s *store.Store, m *memory.Store) *Handler { return &Handler{s: s, m: m} }
-func hash(v []byte) string                         { h := sha256.Sum256(v); return hex.EncodeToString(h[:]) }
+
+// WithEnvironment attaches the environment runtime so the three meta-tools can
+// work. Called once at startup; a nil bridge leaves them reported as unavailable.
+func (h *Handler) WithEnvironment(bridge ToolBridge) *Handler {
+	h.bridge = bridge
+	return h
+}
+func hash(v []byte) string { h := sha256.Sum256(v); return hex.EncodeToString(h[:]) }
 func (h *Handler) Execute(ctx context.Context, scope Scope, r Request) (any, int, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, 503, err
@@ -44,6 +55,12 @@ func (h *Handler) Execute(ctx context.Context, scope Scope, r Request) (any, int
 	var fields map[string]json.RawMessage
 	if json.Unmarshal(r.Arguments, &fields) != nil || fields == nil {
 		return domain("invalid_arguments"), 400, nil
+	}
+	// The environment meta-tools carry free-form arguments (a schema the adapter
+	// defines, and a whole object of values), so they cannot use the string-only
+	// allowlist below. They are routed first, and validate their own input.
+	if IsEnvironmentTool(r.Tool) {
+		return h.executeEnvironmentTool(ctx, scope, r, fields)
 	}
 	allowed := map[string]bool{"scope": true}
 	switch r.Tool {
@@ -189,8 +206,18 @@ func (h *Handler) complete(id string, payload any, status int) (any, int, error)
 	if err != nil {
 		return nil, 503, err
 	}
-	if len(b) > 2<<20 {
-		return nil, 503, errors.New("tool result exceeds bound")
+	// Bound the result before it can reach a model.
+	//
+	// This replaced a 2 MiB ceiling that *errored*, which threw the whole result
+	// away: a model asking for a large listing learned nothing at all, whereas a
+	// truncated listing plus an explicit byte count lets it narrow the request.
+	// The recorded payload is bounded too, so a replayed operation cannot smuggle
+	// a large result past the cap on the second attempt.
+	if len(b) > MaxToolResultBytes {
+		payload = map[string]any{"text": BoundToolResult(b)}
+		if b, err = json.Marshal(payload); err != nil {
+			return nil, 503, err
+		}
 	}
 	if err = h.s.CompleteToolOperation(id, status, b, ""); err != nil {
 		return nil, 503, err

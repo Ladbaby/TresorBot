@@ -447,6 +447,54 @@ func (h *Host) Webhook(ctx context.Context, p WebhookParams) (WebhookResult, err
 	return out, nil
 }
 
+// Tools lists the tools one instance exposes.
+//
+// A plain forwarding call rather than a cached one: the caller decides when to
+// ask, because the catalogue has to be current at the moment the model searches
+// and must not be stale just because the session started earlier.
+func (h *Host) Tools(ctx context.Context, instance string) ([]ToolDefinition, error) {
+	if err := h.ensure(ctx); err != nil {
+		return nil, err
+	}
+	conn := h.conn()
+	if conn == nil {
+		return nil, ErrClosed
+	}
+	raw, err := conn.call(ctx, MethodToolsList, ToolsListParams{Instance: instance})
+	if err != nil {
+		return nil, err
+	}
+	var out ToolsListResult
+	if err = json.Unmarshal(raw, &out); err != nil {
+		return nil, err
+	}
+	return out.Tools, nil
+}
+
+// CallTool runs one tool on one instance.
+//
+// The result is returned as raw JSON. Sun bounds its size but not its shape: an
+// adapter may answer with a string or a structure, and narrowing that here would
+// force every adapter into one representation for no benefit.
+func (h *Host) CallTool(ctx context.Context, p ToolsCallParams) (json.RawMessage, error) {
+	if err := h.ensure(ctx); err != nil {
+		return nil, err
+	}
+	conn := h.conn()
+	if conn == nil {
+		return nil, ErrClosed
+	}
+	raw, err := conn.call(ctx, MethodToolsCall, p)
+	if err != nil {
+		return nil, err
+	}
+	var out ToolsCallResult
+	if err = json.Unmarshal(raw, &out); err != nil {
+		return nil, err
+	}
+	return out.Result, nil
+}
+
 // Deliver asks an adapter to send one result upstream.
 func (h *Host) Deliver(ctx context.Context, p DeliveryParams) (DeliveryResult, error) {
 	if err := h.ensure(ctx); err != nil {

@@ -10,7 +10,7 @@ import (
 )
 
 func (a *Application) nativeTools() http.Handler {
-	tools := bottools.New(a.store, a.memory)
+	tools := a.newTools()
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		reply := func(status int, payload any) {
 			w.Header().Set("Content-Type", "application/json")
@@ -62,7 +62,14 @@ func (a *Application) nativeTools() http.Handler {
 				fail(503, "tools_unavailable")
 				return
 			}
-			reply(200, map[string]any{"tools": append(bottools.Definitions(), delegation...)})
+			definition := append(bottools.Definitions(), delegation...)
+			// Meta-tools are mounted only when environments are enabled: a bot that
+			// has no environment should not spend prompt budget on three tools that
+			// can only report that fact.
+			if a.environments != nil {
+				definition = append(definition, bottools.EnvironmentDefinitions()...)
+			}
+			reply(200, map[string]any{"tools": definition})
 			return
 		}
 		if r.URL.Path != "/api/runner/tools/execute" {

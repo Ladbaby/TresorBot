@@ -37,6 +37,10 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const HOST_VERSION = "1.0.0";
 const ENVIRONMENTS_DIR = process.env.TRESORBOT_ENVIRONMENTS_DIR || resolve(HERE, "..", "environments");
 const MAX_INSTANCES = Number(process.env.TRESORBOT_MAX_INSTANCES || 200);
+// A tool call holds a model turn open, so it is bounded more tightly than a
+// shutdown. Sun applies its own ceiling; this one exists so the adapter is told
+// it timed out rather than leaving the whole host unresponsive.
+const TOOL_CALL_TIMEOUT_MS = 30000;
 
 /**
  * The host's side of the JSON-RPC channel.
@@ -261,6 +265,14 @@ class InputHost {
         this.writer.result(id, {});
         return;
       }
+      case "environment/tools_list": {
+        await this.toolsList(params, id);
+        return;
+      }
+      case "environment/tools_call": {
+        await this.toolsCall(params, id);
+        return;
+      }
       case "environment/webhook": {
         await this.webhook(params, id);
         return;
@@ -352,6 +364,88 @@ class InputHost {
       await instance.stop();
     } catch (cause) {
       this.writer.notify("environment/log", { instance: name, level: "error", message: describeError(cause) });
+    }
+  }
+
+  /**
+   * Reports which tools one instance exposes.
+   *
+   * An adapter that does not implement listTools simply has none: that is not an
+   * error, because declaring the `tools` capability is Sun's business, and an
+   * adapter that later stops offering tools should degrade rather than fail.
+   */
+  async toolsList(params, id) {
+    const instance = this.instances.get(params?.instance);
+    if (!instance) {
+      this.writer.fail(id, -32602, `instance ${JSON.stringify(params?.instance)} is not configured`, "unknown_instance");
+      return;
+    }
+    if (!instance.environment.capabilities.includes("tools")) {
+      this.writer.fail(id, -32603, `environment ${instance.environment.name} does not declare the tools capability`, "not_capable");
+      return;
+    }
+    try {
+      const listed = (await instance.adapter?.listTools?.()) ?? [];
+      // Normalised here so Sun receives one shape even from a sloppy adapter: a
+      // tool without a name is dropped rather than becoming an unnamed entry the
+      // model could never call.
+      const tools = [];
+      for (const tool of Array.isArray(listed) ? listed : []) {
+        if (!tool || typeof tool.name !== "string" || !tool.name) continue;
+        tools.push({
+          name: tool.name,
+          description: String(tool.description ?? ""),
+          parameters: tool.parameters && typeof tool.parameters === "object" ? tool.parameters : { type: "object", properties: {} },
+        });
+      }
+      this.writer.result(id, { tools });
+    } catch (cause) {
+      this.writer.fail(id, -32603, describeError(cause), cause.reason ?? "tools_list_failed");
+    }
+  }
+
+  /**
+   * Runs one tool on one instance.
+   *
+   * The call is bounded here as well as in Sun: an adapter that hangs must fail
+   * its own call with a reason, not hold a model turn open until the turn itself
+   * times out, which would look to the model like the environment vanished.
+   */
+  async toolsCall(params, id) {
+    const instance = this.instances.get(params?.instance);
+    if (!instance) {
+      this.writer.fail(id, -32602, `instance ${JSON.stringify(params?.instance)} is not configured`, "unknown_instance");
+      return;
+    }
+    if (!instance.environment.capabilities.includes("tools")) {
+      this.writer.fail(id, -32603, `environment ${instance.environment.name} does not declare the tools capability`, "not_capable");
+      return;
+    }
+    const name = params?.name;
+    if (typeof name !== "string" || !name) {
+      this.writer.fail(id, -32602, "name is required", "bad_request");
+      return;
+    }
+    if (typeof instance.adapter?.callTool !== "function") {
+      this.writer.fail(id, -32603, `environment ${instance.environment.name} does not implement callTool`, "not_capable");
+      return;
+    }
+    try {
+      const result = await withTimeout(
+        instance.adapter.callTool({
+          name,
+          arguments: params?.arguments ?? {},
+          callId: String(params?.call_id ?? ""),
+        }),
+        TOOL_CALL_TIMEOUT_MS,
+        `${name} did not answer within ${TOOL_CALL_TIMEOUT_MS}ms`,
+      );
+      // JSON-encoded rather than passed through: the Go side bounds size on a byte
+      // count, and an adapter returning a value the record encoder cannot represent
+      // must fail here rather than desynchronise the stream.
+      this.writer.result(id, { result: result === undefined ? null : result });
+    } catch (cause) {
+      this.writer.fail(id, -32603, describeError(cause), cause.reason ?? "tool_failed");
     }
   }
 

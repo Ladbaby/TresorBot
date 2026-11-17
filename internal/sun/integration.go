@@ -25,7 +25,11 @@ func (a *Application) botDecision(bot store.Bot, clientFormat string) (any, erro
 	if err != nil {
 		return nil, err
 	}
-	definitions := append(bottools.Definitions(), delegation...)
+	definition := append(bottools.Definitions(), delegation...)
+	definitions := definition
+	if a.environments != nil {
+		definitions = append(definitions, bottools.EnvironmentDefinitions()...)
+	}
 	instructions := "You are the bot " + bot.Name + ". Use TresorBotMemoryList, TresorBotMemoryRead and TresorBotMemoryWrite for durable memory. Private memory belongs to this bot; shared writes require permission. Use TresorBotContactsList to discover permitted recipients and TresorBotSendMessage for explicitly requested communication; it runs the recipient on an Earth and waits for its reply. Include only the context you intend to share. Read revisions before modifying existing Markdown."
 	if index, err := a.memory.Index(bot.ID, bot.ID); err == nil && strings.TrimSpace(index) != "" {
 		instructions += "\n\n" + index
@@ -53,7 +57,10 @@ func (a *Application) integration(c config.Config) (*gateway.Registry, *bridge.S
 	if err != nil {
 		return nil, nil, err
 	}
-	tools := bottools.New(a.store, a.memory)
+	// newTools, not bottools.New: a second handler without the bridge would answer
+	// TresorBotToolSearch with "no environments are enabled" on the integration
+	// path specifically, which looks like a configuration problem rather than a bug.
+	tools := a.newTools()
 	parse := func(raw json.RawMessage, alias string) (json.RawMessage, bool, error) {
 		input, e := chatinput.Parse(raw, alias)
 		if e != nil {
