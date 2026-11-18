@@ -100,7 +100,13 @@ func (b *environmentBridge) discover() []environments.CatalogEntry {
 			// but refused, which is a worse experience than not offering them.
 			continue
 		}
-		sources = append(sources, environments.ToolInstance{Name: instance.Name, Environment: instance.Environment})
+		sources = append(sources, environments.ToolInstance{
+			Name:        instance.Name,
+			Environment: instance.Environment,
+			// Manageability belongs to the adapter, not the instance, so the
+			// catalogue is consulted per instance rather than guessed from the name.
+			Manage: b.manages(instance.Environment),
+		})
 	}
 	catalog := environments.NewCatalog()
 	catalog.Refresh(context.Background(), manager.Host, sources)
@@ -108,6 +114,34 @@ func (b *environmentBridge) discover() []environments.CatalogEntry {
 		log.Printf("environment tools: %s: %s", instance, problem)
 	}
 	return catalog.Entries()
+}
+
+// manages reports whether an installed adapter declared the manage capability.
+//
+// Read from the installed catalogue rather than the manifest on disk so a bot
+// cannot gain provisioning rights from a manifest that was edited but not
+// installed, which the host would refuse to load anyway.
+func (b *environmentBridge) manages(environment string) bool {
+	manager := b.app.environments
+	if manager == nil || manager.Host == nil {
+		return false
+	}
+	catalogue, err := manager.Host.Environments(context.Background())
+	if err != nil {
+		log.Printf("environment tools: cannot read catalogue: %v", err)
+		return false
+	}
+	for _, info := range catalogue {
+		if info.Name != environment {
+			continue
+		}
+		for _, capability := range info.Capabilities {
+			if capability == environments.CapabilityManage {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // Call runs one tool on behalf of a bot.
@@ -135,6 +169,12 @@ func (b *environmentBridge) Call(ctx context.Context, botID string, entry enviro
 		return nil, fmt.Errorf("environment instance %q belongs to a different bot", entry.Instance)
 	}
 
+	// A managed tool is Sun's own: it provisions instances rather than forwarding to
+	// the adapter, so it never crosses the wire and needs no call id.
+	if entry.Managed {
+		return b.callManaged(ctx, botID, entry, arguments)
+	}
+
 	callCtx, cancel := context.WithTimeout(ctx, toolCallTimeout)
 	defer cancel()
 	// One id per call attempt. The model never sees it; the adapter may use it to
@@ -150,6 +190,60 @@ func (b *environmentBridge) Call(ctx context.Context, botID string, entry enviro
 		return nil, err
 	}
 	return result, nil
+}
+
+// callManaged implements job_create, job_list and job_delete for one instance.
+func (b *environmentBridge) callManaged(ctx context.Context, botID string, entry environments.CatalogEntry, arguments json.RawMessage) (json.RawMessage, error) {
+	manager := b.app.environments
+	var args struct {
+		Name     string `json:"name"`
+		Schedule string `json:"schedule"`
+		Prompt   string `json:"prompt"`
+		Timezone string `json:"timezone"`
+	}
+	if len(arguments) > 0 {
+		if err := json.Unmarshal(arguments, &args); err != nil {
+			return nil, fmt.Errorf("arguments must be an object: %w", err)
+		}
+	}
+	encode := func(value any) (json.RawMessage, error) {
+		raw, err := json.Marshal(value)
+		return raw, err
+	}
+	switch entry.Tool {
+	case "job_create":
+		settings := map[string]any{"schedule": args.Schedule, "text": args.Prompt}
+		if args.Timezone != "" {
+			settings["timezone"] = args.Timezone
+		}
+		instance, err := manager.CreateJob(ctx, entry.Instance, botID, environments.JobSpec{Name: args.Name, Settings: settings})
+		if err != nil {
+			return nil, err
+		}
+		// The catalogue is stale the moment a job exists; rebuilding now means the
+		// model can immediately describe the schedule it just made.
+		b.Refresh()
+		return encode(map[string]any{
+			"created": instance.Name,
+			"note":    "The schedule is live. Use " + instance.Name + " with its own tools, or TresorBotToolSearch, to inspect it.",
+		})
+	case "job_list":
+		jobs, err := manager.ListJobs(entry.Instance, botID)
+		if err != nil {
+			return nil, err
+		}
+		if len(jobs) == 0 {
+			return encode(map[string]any{"jobs": []any{}, "note": "You have not created any jobs from this environment."})
+		}
+		return encode(map[string]any{"jobs": jobs})
+	case "job_delete":
+		if err := manager.DeleteJob(ctx, entry.Instance, botID, args.Name); err != nil {
+			return nil, err
+		}
+		b.Refresh()
+		return encode(map[string]any{"deleted": args.Name})
+	}
+	return nil, fmt.Errorf("unknown managed tool %q", entry.Tool)
 }
 
 // newTools builds a bottools handler wired to the environment subsystem.

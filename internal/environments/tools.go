@@ -263,6 +263,10 @@ type CatalogEntry struct {
 	// ID is the stable identifier the model names in a call. It encodes the
 	// instance because two instances of one adapter publish the same tool names.
 	ID string
+	// Managed marks a tool Sun implements itself (job_create and friends) rather
+	// than forwarding to the adapter. Dispatch branches on this, so a tool can
+	// never be both: the two paths have different authority.
+	Managed bool
 }
 
 // Name is the model-facing tool name, "<instance>.<tool>".
@@ -309,6 +313,54 @@ func (e CatalogEntry) Signature() string {
 		parts = append(parts, name+": "+kind)
 	}
 	return "(" + strings.Join(parts, ", ") + ")"
+}
+
+// JobToolPrefix names the three tools Sun synthesises for a manageable instance.
+//
+// They are Sun's, not the adapter's: the adapter knows how to run a schedule, but
+// only Sun knows how instances are stored, validated and capped. Synthesising them
+// means any adapter declaring CapabilityManage gets working create/list/delete
+// without writing a line of JavaScript.
+const JobToolPrefix = "job_"
+
+// JobToolDefinitions returns the three provisioning tools for one instance.
+//
+// Named job_create / job_list / job_delete under the instance, which reads as
+// "<instance>.job_create" — the form an operator speaks aloud and a model can
+// guess, and which stays unambiguous when a bot has several cron instances.
+func JobToolDefinitions() []ToolDefinition {
+	object := func(props map[string]any, required []string) json.RawMessage {
+		schema := map[string]any{"type": "object", "properties": props, "additionalProperties": false}
+		if len(required) > 0 {
+			schema["required"] = required
+		}
+		encoded, _ := json.Marshal(schema)
+		return encoded
+	}
+	return []ToolDefinition{
+		{
+			Name:        "job_create",
+			Description: "Create a new schedule of your own from this environment. It appears on the owner's dashboard and runs from now on, so create one only when asked for recurring work. Returns the job name, which you can pass to job_delete later.",
+			Parameters: object(map[string]any{
+				"name":     map[string]any{"type": "string", "maxLength": 48, "description": "A short name for the job, for example 'morning-brief'."},
+				"schedule": map[string]any{"type": "string", "maxLength": 128, "description": "Five cron fields: minute hour day-of-month month day-of-week."},
+				"prompt":   map[string]any{"type": "string", "maxLength": MaxJobPromptBytes, "description": "What to ask you each time it fires."},
+				"timezone": map[string]any{"type": "string", "maxLength": 64, "description": "IANA name such as Europe/Berlin. Omit to use Sun's local time."},
+			}, []string{"name", "schedule", "prompt"}),
+		},
+		{
+			Name:        "job_list",
+			Description: "List the schedules you created from this environment, with their settings.",
+			Parameters:  object(map[string]any{}, nil),
+		},
+		{
+			Name:        "job_delete",
+			Description: "Delete one schedule you created from this environment. It stops firing immediately. You may only delete jobs you created, not the owner's.",
+			Parameters: object(map[string]any{
+				"name": map[string]any{"type": "string", "maxLength": 64, "description": "A job name from job_list."},
+			}, []string{"name"}),
+		},
+	}
 }
 
 // ToolSource is what discovery needs from the host. An interface rather than a
@@ -373,6 +425,18 @@ func (c *Catalog) Find(name string) (CatalogEntry, bool) {
 type ToolInstance struct {
 	Name        string
 	Environment string
+	// Manage reports whether the adapter declared CapabilityManage, which is what
+	// makes Sun synthesise job_create/job_list/job_delete for this instance.
+	Manage bool
+}
+
+// isJobTool reports whether Sun implements this tool itself.
+func isJobTool(name string) bool {
+	switch name {
+	case "job_create", "job_list", "job_delete":
+		return true
+	}
+	return false
 }
 
 // Refresh rebuilds the catalog from the given instances.
@@ -391,13 +455,20 @@ func (c *Catalog) Refresh(ctx context.Context, source ToolSource, instances []To
 		if !known[instance.Environment] {
 			known[instance.Environment] = true
 		}
+		// Sun's own job tools come first for this instance, and would be present even
+		// if the adapter published nothing: the storage is Sun's.
+		var managed []ToolDefinition
+		if instance.Manage {
+			managed = JobToolDefinitions()
+		}
 		tools, err := source.Tools(ctx, instance.Name)
-		if err != nil {
+		if err != nil && len(managed) == 0 {
 			// One instance failing must not empty the catalog: its siblings keep
 			// working, and the failure is reported rather than silently dropped.
 			problems[instance.Name] = err.Error()
 			continue
 		}
+		tools = append(managed, tools...)
 		if len(tools) > MaxToolsPerInstance {
 			problems[instance.Name] = fmt.Sprintf("published %d tools, above the %d limit", len(tools), MaxToolsPerInstance)
 			continue
@@ -428,6 +499,7 @@ func (c *Catalog) Refresh(ctx context.Context, source ToolSource, instances []To
 				Description: strings.TrimSpace(tool.Description),
 				Parameters:  tool.Parameters,
 				ID:          "environment:" + instance.Name + ":" + tool.Name,
+				Managed:     isJobTool(tool.Name),
 			}
 			// A name collision can only happen across instances sharing a name,
 			// which the store forbids, but the check is cheap and the alternative

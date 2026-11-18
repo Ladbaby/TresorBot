@@ -105,7 +105,18 @@ func (h *Host) SetReconcile(fn func(ctx context.Context) error) {
 	h.reconcile = fn
 }
 
-func (h *Host) logf(format string, args ...any) { h.cfg.Logf(format, args...) }
+// logf reports a diagnostic.
+//
+// A nil Logf is normal — Open fills one in, but a Host built directly (a test, or a
+// caller that does not want output) leaves it empty. Calling through unconditionally
+// panicked on the first restart attempt, which is precisely the moment a host is
+// already in trouble, so it discards instead.
+func (h *Host) logf(format string, args ...any) {
+	if h.cfg.Logf == nil {
+		return
+	}
+	h.cfg.Logf(format, args...)
+}
 
 // ensure starts the process once and completes the handshake.
 func (h *Host) ensure(ctx context.Context) error {
