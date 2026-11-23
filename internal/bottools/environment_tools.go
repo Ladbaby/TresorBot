@@ -34,7 +34,12 @@ type ToolBridge interface {
 	// Catalogue returns the tools currently offered, already validated.
 	Catalogue() []environments.CatalogEntry
 	// Call runs one tool on behalf of a bot.
-	Call(ctx context.Context, botID string, entry environments.CatalogEntry, arguments json.RawMessage) (json.RawMessage, error)
+	//
+	// tool is the caller's name for the tool. It is passed separately from entry
+	// because it is what the model actually wrote: entry is the catalogue's match,
+	// and the two can differ ("morning.send" against a row for "send"). Logging or
+	// refusing on the matched name alone would misreport what was attempted.
+	Call(ctx context.Context, botID string, tool string, entry environments.CatalogEntry, arguments json.RawMessage) (json.RawMessage, error)
 }
 
 // ErrNoEnvironments is returned when an environment tool is used on a Sun with

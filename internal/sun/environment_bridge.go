@@ -150,7 +150,7 @@ func (b *environmentBridge) manages(environment string) bool {
 // but it is re-checked against the store here as well: this method is the last
 // point before third-party code runs, and an authorization decision made earlier
 // in a longer call chain is not something to trust at the boundary.
-func (b *environmentBridge) Call(ctx context.Context, botID string, entry environments.CatalogEntry, arguments json.RawMessage) (json.RawMessage, error) {
+func (b *environmentBridge) Call(ctx context.Context, botID string, tool string, entry environments.CatalogEntry, arguments json.RawMessage) (json.RawMessage, error) {
 	manager := b.app.environments
 	if manager == nil {
 		return nil, bottools.ErrNoEnvironments
@@ -173,6 +173,22 @@ func (b *environmentBridge) Call(ctx context.Context, botID string, entry enviro
 	// the adapter, so it never crosses the wire and needs no call id.
 	if entry.Managed {
 		return b.callManaged(ctx, botID, entry, arguments)
+	}
+
+	// Outbound chat is the one tool class that reaches real people, so it is
+	// authorized here rather than in the adapter. This runs after the grant check
+	// above: the bot must own the instance *and* the instance must be allowed to
+	// speak in the conversation it names.
+	if entry.SideEffect == environments.SideEffectMessage {
+		var args map[string]any
+		if len(arguments) > 0 {
+			if err := json.Unmarshal(arguments, &args); err != nil {
+				return nil, fmt.Errorf("arguments must be an object: %w", err)
+			}
+		}
+		if err := environments.CheckOutbound(b.app.store, entry.Instance, args); err != nil {
+			return nil, err
+		}
 	}
 
 	callCtx, cancel := context.WithTimeout(ctx, toolCallTimeout)

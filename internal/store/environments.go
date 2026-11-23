@@ -43,6 +43,11 @@ CREATE TABLE IF NOT EXISTS environment_events(
   received_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   task_id TEXT,
   rejected_reason TEXT NOT NULL DEFAULT '',
+  -- reply_to is the adapter's own routing handle for this event, verbatim. It is
+  -- stored rather than derived because the delivery pump needs to answer in the
+  -- conversation the event came from, and that place is known only to the adapter
+  -- that received it.
+  reply_to TEXT NOT NULL DEFAULT '',
   PRIMARY KEY(instance, event_id)
 );
 CREATE INDEX IF NOT EXISTS environment_events_task ON environment_events(task_id);
@@ -63,12 +68,67 @@ CREATE TABLE IF NOT EXISTS environment_deliveries(
 );
 CREATE INDEX IF NOT EXISTS environment_deliveries_pending ON environment_deliveries(state, next_attempt_at);
 CREATE INDEX IF NOT EXISTS environment_deliveries_instance ON environment_deliveries(instance);
+-- environment_conversations is the set of places an instance may SPEAK.
+--
+-- It exists because outbound chat is not the same authority as outbound tooling.
+-- A bot with a chat environment could otherwise message any user id, and a
+-- prompt injection is enough to guess one. Rows are learned automatically when a
+-- conversation messages the instance, which is what lets a bot answer someone new
+-- without any operator configuration; operator-added rows cover the case where the
+-- bot must speak first.
+CREATE TABLE IF NOT EXISTS environment_conversations(
+  instance TEXT NOT NULL,
+  -- conversation is the adapter's own chat identifier, normalised by the adapter.
+  conversation TEXT NOT NULL,
+  -- label is human-facing only: a group title or a person's name, for the dashboard.
+  label TEXT NOT NULL DEFAULT '',
+  -- source is 'inbound' (learned) or 'manual' (an operator added it).
+  source TEXT NOT NULL DEFAULT 'inbound',
+  -- allowed is 0 for a conversation an operator has blocked. Row presence is not
+  -- enough, because blocking must not be undone by the next inbound message.
+  allowed INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY(instance, conversation)
+);
+CREATE INDEX IF NOT EXISTS environment_conversations_instance ON environment_conversations(instance);
 `
 
 // InitEnvironmentsSchema creates the environment-side tables. It is idempotent and safe to
 // call on every start, including on a database written by an older Sun.
 func (s *Store) InitEnvironmentsSchema() error {
-	_, err := s.db.Exec(environmentSchemaV1)
+	if _, err := s.db.Exec(environmentSchemaV1); err != nil {
+		return err
+	}
+	// Environments shipped before reply_to existed, so an installed database has
+	// the table without the column. Adding it is additive and safe to repeat;
+	// failing here would strand every existing deployment on an upgrade.
+	if err := s.ensureColumn("environment_events", "reply_to", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	return nil
+}
+
+// ensureColumn adds a column when an older database lacks it.
+func (s *Store) ensureColumn(table, column, definition string) error {
+	rows, err := s.db.Query("SELECT name FROM pragma_table_info(?)", table)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return err
+		}
+		if name == column {
+			return nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	_, err = s.db.Exec("ALTER TABLE " + table + " ADD COLUMN " + column + " " + definition)
 	return err
 }
 
@@ -309,6 +369,10 @@ type EnvironmentEvent struct {
 	ReceivedAt     string `json:"received_at,omitempty"`
 	TaskID         string `json:"task_id,omitempty"`
 	RejectedReason string `json:"rejected_reason,omitempty"`
+	// ReplyTo is the adapter's routing handle, stored verbatim as JSON. Sun does not
+	// interpret it: the adapter wrote it and the same adapter reads it back when a
+	// result is ready to deliver.
+	ReplyTo string `json:"reply_to,omitempty"`
 }
 
 // LookupEnvironmentEvent reports whether an event was already handled.
@@ -321,8 +385,8 @@ type EnvironmentEvent struct {
 func (s *Store) LookupEnvironmentEvent(instance, eventID string) (EnvironmentEvent, bool, error) {
 	var e EnvironmentEvent
 	var taskID sql.NullString
-	err := s.db.QueryRow(`SELECT instance,event_id,kind,COALESCE(occurred_at,''),COALESCE(received_at,''),task_id,rejected_reason FROM environment_events WHERE instance=? AND event_id=?`, instance, eventID).
-		Scan(&e.Instance, &e.EventID, &e.Kind, &e.OccurredAt, &e.ReceivedAt, &taskID, &e.RejectedReason)
+	err := s.db.QueryRow(`SELECT instance,event_id,kind,COALESCE(occurred_at,''),COALESCE(received_at,''),COALESCE(task_id,''),rejected_reason,reply_to FROM environment_events WHERE instance=? AND event_id=?`, instance, eventID).
+		Scan(&e.Instance, &e.EventID, &e.Kind, &e.OccurredAt, &e.ReceivedAt, &taskID, &e.RejectedReason, &e.ReplyTo)
 	if err == sql.ErrNoRows {
 		return e, false, nil
 	}
@@ -348,7 +412,7 @@ func (s *Store) RecordEnvironmentEvent(e EnvironmentEvent) error {
 	if e.TaskID != "" {
 		taskID = e.TaskID
 	}
-	_, err := s.db.Exec(`INSERT INTO environment_events(instance,event_id,kind,occurred_at,task_id,rejected_reason) VALUES(?,?,?,?,?,?) ON CONFLICT(instance,event_id) DO NOTHING`, e.Instance, e.EventID, e.Kind, occurred, taskID, e.RejectedReason)
+	_, err := s.db.Exec(`INSERT INTO environment_events(instance,event_id,kind,occurred_at,task_id,rejected_reason,reply_to) VALUES(?,?,?,?,?,?,?) ON CONFLICT(instance,event_id) DO NOTHING`, e.Instance, e.EventID, e.Kind, occurred, taskID, e.RejectedReason, e.ReplyTo)
 	return err
 }
 
@@ -360,7 +424,7 @@ func (s *Store) ListEnvironmentEvents(instance string, limit int) ([]Environment
 	if limit > 500 {
 		return nil, ErrInvalid
 	}
-	rows, err := s.db.Query(`SELECT instance,event_id,kind,COALESCE(occurred_at,''),COALESCE(received_at,''),COALESCE(task_id,''),rejected_reason FROM environment_events WHERE (?='' OR instance=?) ORDER BY received_at DESC LIMIT ?`, instance, instance, limit)
+	rows, err := s.db.Query(`SELECT instance,event_id,kind,COALESCE(occurred_at,''),COALESCE(received_at,''),COALESCE(task_id,''),rejected_reason,reply_to FROM environment_events WHERE (?='' OR instance=?) ORDER BY received_at DESC LIMIT ?`, instance, instance, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -368,7 +432,7 @@ func (s *Store) ListEnvironmentEvents(instance string, limit int) ([]Environment
 	out := []EnvironmentEvent{}
 	for rows.Next() {
 		var e EnvironmentEvent
-		if err = rows.Scan(&e.Instance, &e.EventID, &e.Kind, &e.OccurredAt, &e.ReceivedAt, &e.TaskID, &e.RejectedReason); err != nil {
+		if err = rows.Scan(&e.Instance, &e.EventID, &e.Kind, &e.OccurredAt, &e.ReceivedAt, &e.TaskID, &e.RejectedReason, &e.ReplyTo); err != nil {
 			return nil, err
 		}
 		out = append(out, e)
@@ -632,8 +696,8 @@ func (s *Store) SettledEnvironmentTasksAwaitingDelivery(limit int) ([]SettledEnv
 func (s *Store) EnvironmentEventForTask(taskID string) (EnvironmentEvent, bool, error) {
 	var e EnvironmentEvent
 	var task sql.NullString
-	err := s.db.QueryRow(`SELECT instance,event_id,kind,COALESCE(occurred_at,''),COALESCE(received_at,''),task_id,rejected_reason FROM environment_events WHERE task_id=? LIMIT 1`, taskID).
-		Scan(&e.Instance, &e.EventID, &e.Kind, &e.OccurredAt, &e.ReceivedAt, &task, &e.RejectedReason)
+	err := s.db.QueryRow(`SELECT instance,event_id,kind,COALESCE(occurred_at,''),COALESCE(received_at,''),COALESCE(task_id,''),rejected_reason,reply_to FROM environment_events WHERE task_id=? LIMIT 1`, taskID).
+		Scan(&e.Instance, &e.EventID, &e.Kind, &e.OccurredAt, &e.ReceivedAt, &task, &e.RejectedReason, &e.ReplyTo)
 	if err == sql.ErrNoRows {
 		return e, false, nil
 	}

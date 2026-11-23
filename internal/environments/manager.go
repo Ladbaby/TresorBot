@@ -380,11 +380,15 @@ func (m *Manager) routeForTask(ctx context.Context, taskID string) (json.RawMess
 	if err != nil || !found {
 		return nil, err
 	}
-	// The route is reconstructed from what the event carried; when a source has no
-	// route, the adapter gets an empty one and decides for itself.
+	// The stored route is returned verbatim. It used to be reconstructed from the
+	// event kind, which silently discarded the conversation: a chat message could be
+	// admitted but never answered, because the delivery had no chat to go to. When a
+	// source has no route the adapter gets an empty one and decides for itself.
 	var route Route
-	if e.Kind != "" {
-		route.Channel = e.Kind
+	if e.ReplyTo != "" {
+		if err := json.Unmarshal([]byte(e.ReplyTo), &route); err != nil {
+			m.logf("instance %q has an unreadable reply route for task %s: %v", e.Instance, taskID, err)
+		}
 	}
 	raw, err := json.Marshal(route)
 	if err != nil {
@@ -422,6 +426,10 @@ func (s intakeStore) RecordEnvironmentEvent(e store.EnvironmentEvent) error {
 	return s.store.RecordEnvironmentEvent(e)
 }
 func (s intakeStore) GetBot(id string) (store.Bot, error) { return s.store.GetBot(id) }
+
+func (s intakeStore) RecordInboundConversation(instance, conversation, label string) error {
+	return s.store.RecordInboundConversation(instance, conversation, label)
+}
 func (s intakeStore) BotByAlias(alias string) (store.Bot, error) {
 	return s.store.BotByAlias(alias)
 }

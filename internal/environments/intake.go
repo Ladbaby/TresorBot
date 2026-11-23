@@ -26,6 +26,7 @@ type Store interface {
 	LookupEnvironmentEvent(instance, eventID string) (store.EnvironmentEvent, bool, error)
 	RecordEnvironmentEvent(store.EnvironmentEvent) error
 	GetBot(id string) (store.Bot, error)
+	RecordInboundConversation(instance, conversation, label string) error
 	BotByAlias(alias string) (store.Bot, error)
 	ListContacts(botID string) ([]store.Contact, error)
 	QueuedTaskCount(botID string) (int, error)
@@ -162,11 +163,39 @@ func (i *Intake) Admit(ctx context.Context, e Event) (Ack, error) {
 	if !e.OccurredAt.IsZero() {
 		occurred = e.OccurredAt.UTC().Format("2006-01-02T15:04:05Z07:00")
 	}
+	// A conversation that reached this bot is allowed to be answered. Recorded
+	// before the task runs so that a reply produced quickly cannot lose a race with
+	// its own allow-list entry, which would refuse the answer to a message Sun had
+	// just accepted.
+	if e.ReplyTo != nil && e.ReplyTo.Conversation != "" {
+		label := e.Origin.Sender
+		if e.Origin.Channel != "" && e.Origin.Channel != "direct" {
+			label = strings.TrimSpace(e.Origin.Channel + " " + label)
+		}
+		if err := i.Store.RecordInboundConversation(e.Instance, e.ReplyTo.Conversation, label); err != nil {
+			// Not fatal: the message is still answerable from the tool path if the
+			// operator has allowed the conversation, and refusing the message over a
+			// bookkeeping failure would lose real content.
+			i.logf("input %q could not record conversation %q: %v", e.Instance, e.ReplyTo.Conversation, err)
+		}
+	}
 	// Recording the outcome after admission is deliberate: a crash between the two
 	// leaves a task with no ledger row, and the next delivery re-admits it as a
 	// duplicate through request_keys, which is safe. The reverse order would record
 	// an event as handled that no task exists for — a lost event.
-	if err := i.Store.RecordEnvironmentEvent(store.EnvironmentEvent{Instance: e.Instance, EventID: e.EventID, Kind: e.Kind, OccurredAt: occurred, TaskID: task.ID}); err != nil {
+	// The route is persisted with the event because it is the only record of where a
+	// reply belongs. It is opaque JSON written by the adapter; if it cannot be
+	// marshalled the event is still admitted, since losing the reply target is
+	// better than losing the message.
+	replyTo := ""
+	if e.ReplyTo != nil {
+		if raw, err := json.Marshal(e.ReplyTo); err == nil {
+			replyTo = string(raw)
+		} else {
+			i.logf("input %q event %q has an unusable reply route: %v", e.Instance, e.EventID, err)
+		}
+	}
+	if err := i.Store.RecordEnvironmentEvent(store.EnvironmentEvent{Instance: e.Instance, EventID: e.EventID, Kind: e.Kind, OccurredAt: occurred, TaskID: task.ID, ReplyTo: replyTo}); err != nil {
 		i.logf("input %q could not record event %q: %v", e.Instance, e.EventID, err)
 		return Retry("ledger_write_failed"), err
 	}

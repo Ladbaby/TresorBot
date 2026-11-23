@@ -87,7 +87,7 @@ func (h *Handler) executeEnvironmentTool(ctx context.Context, scope Scope, r Req
 	if len(arguments) == 0 || string(arguments) == "null" {
 		arguments = json.RawMessage(`{}`)
 	}
-	result, err := h.bridge.Call(ctx, scope.BotID, entry, arguments)
+	result, err := h.bridge.Call(ctx, scope.BotID, tool, entry, arguments)
 	if err != nil {
 		// The adapter failed, not the model. Reporting the reason lets the model
 		// decide to retry or report, instead of guessing why nothing happened.

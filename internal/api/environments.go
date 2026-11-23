@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"sort"
+	"strings"
 	"time"
 
 	"tresorbot/internal/environments"
@@ -91,6 +92,12 @@ func (a *API) environmentsRoute(w http.ResponseWriter, r *http.Request, parts []
 				return
 			}
 			respond(w, map[string]any{"token": token, "path": environments.IngressPrefix + parts[1]}, nil)
+			return
+		case "conversations":
+			// The set of places this instance may speak. Reads and writes both, because
+			// a bot that a person messaged learns automatically, but a bot that must
+			// start a conversation needs an operator to allow it here.
+			a.environmentConversations(w, r, parts[1])
 			return
 		case "deliveries":
 			if r.Method != "GET" {
@@ -323,4 +330,63 @@ func inputHasCapability(catalogue []environments.EnvironmentInfo, name, capabili
 		return false
 	}
 	return false
+}
+
+// environmentConversations serves the outbound allow-list for one instance.
+//
+// This is the operator's half of the outbound gate. A conversation that messages
+// the bot is learned automatically, so the common case needs nothing here; these
+// endpoints exist for the two cases that cannot be learned — allowing a chat the
+// bot must open itself, and blocking one it should stop answering.
+func (a *API) environmentConversations(w http.ResponseWriter, r *http.Request, instance string) {
+	if _, err := a.s.GetEnvironmentInstance(instance); err != nil {
+		respond(w, nil, err)
+		return
+	}
+	switch r.Method {
+	case "GET":
+		conversations, err := a.s.ListConversations(instance)
+		respond(w, map[string]any{"conversations": conversations}, err)
+		return
+	case "POST":
+		var body struct {
+			Conversation string `json:"conversation"`
+			Label        string `json:"label"`
+			Allowed      *bool  `json:"allowed"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeErr(w, 400, "body must be a JSON object")
+			return
+		}
+		if strings.TrimSpace(body.Conversation) == "" {
+			writeErr(w, 400, "conversation is required")
+			return
+		}
+		// An explicit allowed=false is a block; anything else allows.
+		if body.Allowed != nil && !*body.Allowed {
+			if err := a.s.SetConversationAllowed(instance, body.Conversation, false); err != nil {
+				respond(w, nil, err)
+				return
+			}
+		} else if err := a.s.AddConversation(instance, body.Conversation, body.Label); err != nil {
+			respond(w, nil, err)
+			return
+		}
+		conversations, err := a.s.ListConversations(instance)
+		respond(w, map[string]any{"conversations": conversations}, err)
+		return
+	case "DELETE":
+		conversation := strings.TrimSpace(r.URL.Query().Get("conversation"))
+		if conversation == "" {
+			writeErr(w, 400, "conversation query parameter is required")
+			return
+		}
+		if err := a.s.RemoveConversation(instance, conversation); err != nil {
+			respond(w, nil, err)
+			return
+		}
+		respond(w, map[string]any{"ok": true, "removed": conversation}, nil)
+		return
+	}
+	writeErr(w, 405, "method not allowed")
 }

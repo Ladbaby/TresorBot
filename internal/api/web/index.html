@@ -31,7 +31,7 @@ async function runners(){const root=panel('Earth');root.append(el('p','Register 
 // this tab only configures instances of what is already installed.
 async function environments(){
   const root=panel('Environments'),data=await req('/environments'),catalogue=data.catalogue||[];
-  root.append(el('p','An environment is a surface the bot interacts with: a chat, a pull request, a schedule. Each instance binds one installed environment to one bot, and an adapter can both raise events and receive the bot's results.'));
+  root.append(el('p','An environment is a surface the bot interacts with: a chat, a pull request, a schedule. Each instance binds one installed environment to one bot, and an adapter can both raise events and receive the results the bot produces.'));
   if(!data.enabled)root.append(el('p','Environments are turned off. Add an environments section to the Sun configuration and restart to enable them.'),el('small','Section: environments: { enabled: true }'));
   if(!catalogue.length)root.append(el('p','No environments are installed.'),el('small','Install one with: tresorbot-sun environment install <https-url> --sha256 <digest>'));
   for(const [name,message] of Object.entries(data.problems||{}))root.append(el('p','Input host: '+message));
@@ -141,6 +141,40 @@ async function environments(){
         c.append(display);
       });
     }
+    // Outbound allow-list. Shown for every instance because any adapter may publish
+    // message tools; the list is empty until a conversation sends something, which
+    // is the common case and needs no operator action.
+    c.append(el('h4','Conversations it may message'),el('small','Learned automatically when a chat messages the bot. Add one to let the bot open a conversation itself; block one to stop answers.'));
+    const convBox=el('section');
+    const convList=el('ul');
+    async function loadConversations(){
+      convList.replaceChildren();
+      const rows=(await req('/environments/'+encodeURIComponent(inst.name)+'/conversations')).conversations||[];
+      if(!rows.length)convList.append(el('li','None yet.'));
+      for(const row of rows){
+        const li=el('li');
+        li.append(el('span',`${row.conversation}${row.label?' \u2014 '+row.label:''} (${row.source}${row.allowed?'':' \u00b7 blocked'})`));
+        btn(li,row.allowed?'Block':'Allow',async()=>{
+          await send('/environments/'+encodeURIComponent(inst.name)+'/conversations','POST',{conversation:row.conversation,label:row.label,allowed:!row.allowed});
+          loadConversations();
+        });
+        btn(li,'Forget',async()=>{
+          if(!confirm('Forget '+row.conversation+'? The bot will not be able to message it unless it writes again.'))return;
+          await req('/environments/'+encodeURIComponent(inst.name)+'/conversations?conversation='+encodeURIComponent(row.conversation),{method:'DELETE'});
+          loadConversations();
+        });
+        convList.append(li);
+      }
+    }
+    await loadConversations().catch(e=>say(e.message));
+    convBox.append(convList);
+    const convId=field(convBox,'Chat id to allow'),convLabel=field(convBox,'Label (optional)');
+    btn(convBox,'Allow conversation',async()=>{
+      if(!convId.value.trim())throw Error('Enter a chat id.');
+      await send('/environments/'+encodeURIComponent(inst.name)+'/conversations','POST',{conversation:convId.value.trim(),label:convLabel.value.trim()});
+      convId.value='';convLabel.value='';loadConversations();
+    });
+    c.append(convBox);
     btn(actions,'Recent events',async()=>{
       const d=await req('/environments/'+encodeURIComponent(inst.name)+'/events'),list=el('ul');
       if(!d.events?.length)list.append(el('li','Nothing received yet.'));

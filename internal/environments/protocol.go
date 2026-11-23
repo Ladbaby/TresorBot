@@ -227,6 +227,11 @@ type ToolDefinition struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description"`
 	Parameters  json.RawMessage `json:"parameters,omitempty"`
+	// SideEffect declares the consequence of a call, so Sun can apply the right
+	// authorization. "message" marks a tool that speaks into a conversation, which
+	// is gated; anything else is ordinary work. An unlisted label is refused at
+	// discovery, so a misspelling cannot silently skip a gate.
+	SideEffect string `json:"side_effect,omitempty"`
 }
 
 // ToolsListResult is the adapter's catalogue for one instance.

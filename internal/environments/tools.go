@@ -267,6 +267,33 @@ type CatalogEntry struct {
 	// than forwarding to the adapter. Dispatch branches on this, so a tool can
 	// never be both: the two paths have different authority.
 	Managed bool
+	// SideEffect classifies what calling this tool does. Empty means ordinary work.
+	SideEffect SideEffect
+}
+
+// SideEffect classifies a tool by the consequence of calling it.
+//
+// It is declared by the adapter in its tool definition rather than inferred from
+// the tool's name, because a name is not a contract: renaming "send" to "post"
+// must not silently drop the outbound authorization gate.
+type SideEffect string
+
+const (
+	// SideEffectMessage marks a tool that sends a message into a conversation. These
+	// are gated: the instance must be allowed to speak there.
+	SideEffectMessage SideEffect = "message"
+)
+
+// Valid reports whether a side effect label is one Sun understands.
+//
+// An unknown label is rejected at discovery rather than ignored, so an adapter
+// cannot guess a spelling that happens to skip a gate.
+func (s SideEffect) Valid() bool {
+	switch s {
+	case "", SideEffectMessage:
+		return true
+	}
+	return false
 }
 
 // Name is the model-facing tool name, "<instance>.<tool>".
@@ -484,6 +511,13 @@ func (c *Catalog) Refresh(ctx context.Context, source ToolSource, instances []To
 				break
 			}
 			taken[tool.Name] = true
+			// A side effect label decides which gate applies, so an unrecognised one
+			// fails the instance rather than being treated as "ordinary work": that
+			// would let a typo publish a tool that sends messages ungated.
+			if !SideEffect(tool.SideEffect).Valid() {
+				problems[instance.Name] = fmt.Sprintf("tool %q declares unknown side_effect %q", tool.Name, tool.SideEffect)
+				break
+			}
 			if err := ValidateToolSchema(tool.Parameters); err != nil {
 				problems[instance.Name] = fmt.Sprintf("tool %q: %v", tool.Name, err)
 				break
@@ -500,6 +534,7 @@ func (c *Catalog) Refresh(ctx context.Context, source ToolSource, instances []To
 				Parameters:  tool.Parameters,
 				ID:          "environment:" + instance.Name + ":" + tool.Name,
 				Managed:     isJobTool(tool.Name),
+				SideEffect:  SideEffect(tool.SideEffect),
 			}
 			// A name collision can only happen across instances sharing a name,
 			// which the store forbids, but the check is cheap and the alternative
